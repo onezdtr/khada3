@@ -58,7 +58,9 @@ def etat(ip=None):
     pays = sorted(({"pays": p, "requetes": n} for p, n in par_pays.items()), key=lambda x: -x["requetes"])[:12]
     propositions = [dict(zip(("id", "domaine", "raison"), l)) for l in db.execute(
         "SELECT id, domaine, raison FROM propositions WHERE etat = 'attente' ORDER BY t DESC")]
-    return {"appareils": appareils, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
+    hors = [{"ip": i, "mac": m, "fabricant": fabricant(m), "vu_le": t} for m, i, t in db.execute(
+        "SELECT mac, ip, vu_le FROM hors_khada3 WHERE vu_le >= ? ORDER BY vu_le DESC", (time.time() - 86400,))]
+    return {"appareils": appareils, "hors": hors, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
             "heures": heures(db, filtre, params), "pause": round(pause_restante()), "regles": regles()}
 
 

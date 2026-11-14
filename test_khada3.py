@@ -463,6 +463,25 @@ def test_deviner_le_type_d_appareil():
     assert db.execute("SELECT COUNT(*) FROM devinettes").fetchone()[0] == 4
 
 
+def test_hors_khada3():
+    import sqlite3
+    db = sqlite3.connect(":memory:")
+    db.executescript("""CREATE TABLE appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL, nom TEXT);
+                        CREATE TABLE hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);""")
+    db.execute("INSERT INTO appareils VALUES ('192.168.1.172', 'aa:bb:cc:00:00:02', 0, NULL)")
+    arp = """IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1      0x1         0x2         00:11:22:33:44:01     *        wlp3s0
+192.168.1.172    0x1         0x2         aa:bb:cc:00:00:02     *        wlp3s0
+192.168.1.176    0x1         0x2         aa:bb:cc:00:00:03     *        wlp3s0
+192.168.1.99     0x1         0x0         00:00:00:00:00:00     *        wlp3s0
+"""
+    assert khada3.hors_khada3(db, arp, "192.168.1.1", 1) == [("192.168.1.176", "aa:bb:cc:00:00:03")]  # ni la box, ni un connu, ni une IP non résolue
+    assert khada3.hors_khada3(db, arp.replace(".176", ".177"), "192.168.1.1", 2) == []  # une seule alerte, même si l'IP change
+    assert db.execute("SELECT ip, vu_le FROM hors_khada3").fetchall() == [("192.168.1.177", 2)]
+    db.execute("INSERT INTO appareils VALUES ('192.168.1.177', 'aa:bb:cc:00:00:03', 3, NULL)")
+    assert khada3.hors_khada3(db, arp, "192.168.1.1", 3) == [] and not db.execute("SELECT * FROM hors_khada3").fetchall()
+
+
 if __name__ == "__main__":
     for nom, f in list(globals().items()):
         if nom.startswith("test_"):

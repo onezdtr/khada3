@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS domaines (domaine TEXT PRIMARY KEY, ip TEXT);
 CREATE TABLE IF NOT EXISTS propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente');
 CREATE TABLE IF NOT EXISTS habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));
 CREATE TABLE IF NOT EXISTS devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);
+CREATE TABLE IF NOT EXISTS hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);
 """)
 if "nom" not in [c[1] for c in db.execute("PRAGMA table_info(appareils)")]:
     db.execute("ALTER TABLE appareils ADD COLUMN nom TEXT")  # bases créées avant les noms d'appareils
@@ -519,6 +520,55 @@ def purger():
         time.sleep(3600)
 
 
+def passerelle():
+    """IP de la box (route par défaut) : toujours présente sur le réseau, elle ne demande rien à khada3."""
+    try:
+        for ligne in Path("/proc/net/route").read_text().splitlines()[1:]:
+            champs = ligne.split()
+            if champs[1] == "00000000":
+                return socket.inet_ntoa(bytes.fromhex(champs[2])[::-1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return ""
+
+
+def hors_khada3(db, arp, box, maintenant):
+    """Appareils de la table ARP (texte de /proc/net/arp) qui n'ont jamais demandé un domaine à khada3 :
+    ils utilisent un autre DNS. Les retient et renvoie ceux vus pour la première fois [(ip, mac)]."""
+    connus = {m or i for i, m in db.execute("SELECT ip, mac FROM appareils")}  # par MAC, par IP si la MAC manquait
+    nouveaux = []
+    for ligne in arp.splitlines()[1:]:
+        champs = ligne.split()
+        if len(champs) < 4 or champs[2] != "0x2" or champs[0] in (box, *connus) or champs[3] in connus:
+            continue  # 0x2 : adresse résolue, l'appareil a parlé récemment
+        ip, mac = champs[0], champs[3]
+        if db.execute("INSERT OR IGNORE INTO hors_khada3 VALUES (?, ?, ?)", (mac, ip, maintenant)).rowcount:
+            nouveaux.append((ip, mac))
+        db.execute("UPDATE hors_khada3 SET ip = ?, vu_le = ? WHERE mac = ?", (ip, maintenant, mac))
+    db.execute("DELETE FROM hors_khada3 WHERE mac IN (SELECT mac FROM appareils)")  # il a fini par passer par khada3
+    return nouveaux
+
+
+def surveiller_reseau():
+    """Toutes les 5 min : signale une fois chaque appareil du réseau qui contourne khada3.
+    shortcut: ne voit que les appareils déjà dans la table ARP du serveur (pas de scan), ajouter un ping des IP du réseau si ça ne suffit pas."""
+    if ECOUTE.startswith("127."):
+        return  # khada3 ne sert que cette machine : la table ARP est celle d'un réseau qui n'est pas le nôtre
+    while True:
+        try:
+            arp = Path("/proc/net/arp").read_text()
+        except OSError:
+            arp = ""
+        with verrou:
+            nouveaux = hors_khada3(db, arp, passerelle(), time.time())
+            db.commit()
+        if nouveaux:
+            alerter("On the network but NOT using khada3 (they ask another DNS, probably the box):\n"
+                    + "\n".join(f"{fabricant(mac) or 'device'} {ip} {mac}" for ip, mac in nouveaux)
+                    + "\nSet their DNS to this server to see and filter them.")
+        time.sleep(300)
+
+
 def en_forme():
     """Vrai si le serveur DNS répond et que la base n'est pas bloquée."""
     question = os.urandom(2) + bytes.fromhex("0100000100000000000000") + b"".join(
@@ -559,6 +609,6 @@ if __name__ == "__main__":
     tcp = socketserver.ThreadingTCPServer((ECOUTE, PORT), GestionTCP)
     serveur = socketserver.ThreadingUDPServer((ECOUTE, PORT), GestionUDP)
     print(f"khada3 listening on {ECOUTE}:{PORT} (UDP and TCP), upstream {', '.join(a[0] for a in AMONTS)}", flush=True)
-    for cible in (tcp.serve_forever, veiller, purger, maj_listes, messager.ecouter, lambda: web.servir(ECOUTE)):
+    for cible in (tcp.serve_forever, veiller, purger, surveiller_reseau, maj_listes, messager.ecouter, lambda: web.servir(ECOUTE)):
         threading.Thread(target=cible, daemon=True).start()
     serveur.serve_forever()

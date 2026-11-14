@@ -42,6 +42,7 @@
   .ligne:last-child { border-bottom: 0; }
   .ligne .d { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .petit { color: var(--doux); font-size: 12px; white-space: nowrap; }
+  .petit.aide { white-space: normal; }
   .n { color: var(--neon); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
   .bloque .d { color: var(--rouge); }
   .bloque .d::before { content: "✕ "; }
@@ -143,6 +144,11 @@
       <h2 id="t-propositions">Agent suggestions</h2>
       <ul id="propositions"></ul>
     </section>
+    <section aria-labelledby="t-hors" id="bloc-hors" hidden>
+      <h2 id="t-hors">Not using khada3 · 24 h</h2>
+      <p class="petit aide">On the network, but they ask another DNS: set their DNS to this server.</p>
+      <ul id="hors"></ul>
+    </section>
     <section aria-labelledby="t-regles">
       <h2 id="t-regles">Rules · per device and hour</h2>
       <ul id="regles"></ul>
@@ -206,7 +212,8 @@ async function rafraichir() {
 
   document.getElementById("appareils").replaceChildren(
     el("li", {}, el("button", { className: "appareil", ariaPressed: String(!choisi), onclick: () => choisir(null), textContent: "whole network" })),
-    ...appareils.map((a) => el("li", { className: "groupe" },
+    // ordre fixe (par IP, comme le radar) : trié par activité, un bouton bougeait sous le curseur toutes les 3 s
+    ...[...appareils].sort((x, y) => ordreIp(x.ip).localeCompare(ordreIp(y.ip))).map((a) => el("li", { className: "groupe" },
       el("button", { className: "appareil", ariaPressed: String(choisi === a.ip), onclick: () => choisir(a.ip), title: `${a.ip} ${a.mac} ${a.fabricant}${a.type ? " · probably " + a.type : ""}` },
         nomDe(a), el("span", { textContent: a.requetes })),
       el("button", { className: "renommer", ariaLabel: `Rename ${nomDe(a)}`, title: "Rename", textContent: "✎", onclick: () => renommer(a) }))));
@@ -223,6 +230,10 @@ async function rafraichir() {
     el("span", { className: "d" }, p.domaine, el("small", { className: "qui", textContent: p.raison })),
     el("button", { className: "oui", textContent: "block", onclick: () => decider(p.id, true) }),
     el("button", { className: "bloquer", textContent: "ignore", onclick: () => decider(p.id, false) }))));
+
+  document.getElementById("bloc-hors").hidden = !etat.hors.length;
+  document.getElementById("hors").replaceChildren(...etat.hors.map((h) => el("li", { className: "ligne" },
+    el("span", { className: "d" }, h.ip, el("small", { className: "qui", textContent: `${h.fabricant || "device"} · ${h.mac}` })))));
 
   document.getElementById("regles").replaceChildren(...etat.regles.map((r) => el("li", { className: "ligne" },
     el("span", { className: "d", textContent: r }),

@@ -4,9 +4,9 @@
 
 *Khada3* means "traitor" in Darija (North African Arabic). Your smart TV, phone and speakers report to dozens of servers every hour: they are the traitors, and khada3 tells on them.
 
-![khada3 dashboard: radar of devices, a 24-hour timeline with a 3 am spike from the TV, the agent answering a question, then suggesting a tracker to block, accepted in one click](docs/demo.gif)
+![khada3 dashboard: radar of devices, a 3 am spike from the TV on the timeline, the agent explaining it, its block suggestion accepted in one click, devices that bypass khada3, a new per-device rule, then blocking paused](docs/demo.gif)
 
-<sub>Demo recorded with simulated devices.</sub>
+<sub>Demo recorded with simulated devices (`docs/demo/`: fake network, recording script, GIF).</sub>
 
 ## What it does
 
@@ -23,6 +23,7 @@
 - **Rules per device and per hour** in `regles.txt`, one per line: `tiktok.com 23-7 Living room TV` blocks TikTok on that device from 23:00 to 07:00; `instagram.com 192.168.1.9` blocks it all day on that IP; `youtube.com 8-16` blocks it for every device during those hours. Edited live, no restart.
 - **Pause blocking** when a site breaks: `/pause 10` on Telegram or the button on the dashboard, `/resume` to block again. Lists are untouched, everything comes back on its own.
 - **Catches devices that slip away.** When a device looks up an encrypted DNS service (Google, Cloudflare, Quad9, NextDNS…) or iCloud Private Relay, its requests would stop going through khada3: you get a suggestion to block it, so the device falls back to khada3.
+- **Spots devices that skip khada3 entirely.** A device on the Wi-Fi that never asks khada3 anything is using another DNS (usually the box's). Every 5 minutes khada3 reads the server's ARP table (no scan) and lists them on the dashboard, with one Telegram alert for each new one, so you know which devices to point at it.
 - **Weekly report** on Sunday at 20:00, no AI needed: requests per device against the week before, devices that went silent for over a day, most blocked domains.
 - A 30-day history, purged automatically.
 
@@ -129,6 +130,7 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 | `rapport.service`, `rapport.timer` | Daily report at 21:00 (systemd user timer) |
 | `semaine.service`, `semaine.timer` | Weekly report, Sunday 20:00 (`resume.py --semaine`) |
 | `test_khada3.py` | Tests |
+| `docs/demo/` | Demo GIF: `gen.py` builds a fake network, `record.mjs` films it in headless Chrome, `gif.sh` makes the GIF |
 
 ## Credits
 
