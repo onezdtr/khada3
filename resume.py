@@ -3,7 +3,8 @@
 Il propose aussi des domaines à bloquer : rien n'est bloqué sans un « oui » (tableau de bord ou bouton Telegram).
 
 Usage : python3 resume.py           -> envoie le rapport et les propositions sur Telegram
-        python3 resume.py --ecran   -> les affiche seulement
+        python3 resume.py --semaine -> envoie le rapport de la semaine (sans IA)
+        ajouter --ecran             -> affiche seulement
 """
 import json
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import qui
 import messager
-from khada3 import BASE, DOMAINE, candidats, est_bloque, fabricant, verrou
+from khada3 import BASE, DOMAINE, candidats, est_bloque, fabricant, nom_appareil, verrou
 
 MODELE = os.environ.get("KHADA3_MODELE", "gemini-3.1-flash-lite")
 LANGUE = os.environ.get("KHADA3_LANGUE", "English")  # langue du rapport du jour
@@ -39,9 +40,9 @@ SCHEMA = {"type": "OBJECT", "required": ["rapport", "a_bloquer"], "properties": 
 def donnees(depuis):
     """Pour chaque appareil, ses 40 domaines les plus demandés depuis `depuis`."""
     db = sqlite3.connect(BASE)
-    lignes = db.execute("""SELECT r.ip, a.mac, a.nom, r.domaine, COUNT(*), SUM(r.bloque),
+    lignes = db.execute("""SELECT r.ip, a.mac, COALESCE(a.nom, d.genre), r.domaine, COUNT(*), SUM(r.bloque),
                                   SUM(CAST(strftime('%H', r.t, 'unixepoch', 'localtime') AS INTEGER) < 6)
-                           FROM requetes r LEFT JOIN appareils a ON a.ip = r.ip
+                           FROM requetes r LEFT JOIN appareils a ON a.ip = r.ip LEFT JOIN devinettes d ON d.ip = r.ip
                            WHERE r.t >= ? GROUP BY r.ip, r.domaine ORDER BY r.ip, COUNT(*) DESC""", (depuis,)).fetchall()
     appareils, ips = {}, dict(db.execute("SELECT domaine, ip FROM domaines"))
     for ip, mac, nom, domaine, n, bloques, nuit in lignes:
@@ -98,7 +99,36 @@ def rapport():
     return "khada3, daily report\n\n" + reponse.get("rapport", ""), nouvelles
 
 
-if __name__ == "__main__":
+def semaine(maintenant=None, db=None):
+    """Rapport de la semaine, sans IA : requêtes par appareil comparées à la semaine d'avant, appareils devenus muets
+    (éteints, ou qui ne passent plus par khada3), domaines les plus bloqués."""
+    maintenant, db = maintenant or time.time(), db or sqlite3.connect(BASE)
+    debut = maintenant - 7 * 86400
+    appareils = db.execute("""SELECT ip, SUM(t >= ?), SUM(t >= ? AND bloque), SUM(t < ?), MAX(t) FROM requetes
+                              WHERE t >= ? AND t < ? GROUP BY ip ORDER BY SUM(t >= ?) DESC""",
+                           (debut, debut, debut, debut - 7 * 86400, maintenant, debut)).fetchall()
+    if not appareils:
+        return "khada3: no DNS request in the last two weeks. Is the server running?"
+    lignes = ["khada3, weekly report", ""]
+    for ip, n, bloques, avant, _ in appareils:
+        evolution = f"{(n - avant) * 100 // avant:+d} % vs last week" if avant else "new this week"
+        if n:
+            lignes.append(f"- {nom_appareil(db, ip)}: {n:,} requests ({evolution}), {bloques:,} blocked")
+    muets = [f"{nom_appareil(db, ip)} (last request {time.strftime('%a %d %b', time.localtime(dernier))})"
+             for ip, *_, dernier in appareils if dernier < maintenant - 86400]
+    if muets:
+        lignes += ["", "Silent for over a day, switched off or no longer using khada3:", *(f"- {m}" for m in muets)]
+    bloques = db.execute("""SELECT domaine, COUNT(*) FROM requetes WHERE t >= ? AND bloque = 1
+                            GROUP BY domaine ORDER BY COUNT(*) DESC LIMIT 5""", (debut,)).fetchall()
+    if bloques:
+        lignes += ["", "Most blocked:", *(f"- {d}: {n:,}" for d, n in bloques)]
+    return "\n".join(lignes)
+
+
+if __name__ == "__main__" and "--semaine" in sys.argv:
+    texte = semaine()
+    print(texte) if "--ecran" in sys.argv else messager.envoyer(texte)
+elif __name__ == "__main__":
     texte, propositions = rapport()
     if "--ecran" in sys.argv:
         print(texte, *(f"\n? {p['domaine']}: {p['raison']}" for p in propositions))

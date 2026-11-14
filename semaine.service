@@ -1,0 +1,8 @@
+[Unit]
+Description=khada3: weekly report to Telegram
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/khada3
+ExecStart=/usr/bin/python3 %h/khada3/resume.py --semaine

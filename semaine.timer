@@ -1,0 +1,9 @@
+[Unit]
+Description=khada3: weekly report, Sunday 20:00
+
+[Timer]
+OnCalendar=Sun *-*-* 20:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

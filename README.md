@@ -20,6 +20,10 @@
 - **Smart alerts** on Telegram: a new device joins; a device contacts a company or a server country it never talked to before (after a one-day learning period); a device is suddenly busy at night (3× its usual hourly pace). At most 10 alerts an hour.
 - **Never cuts your internet.** A second upstream server if the first one fails; already-visited sites keep working from the cache even when every upstream is down; and a systemd watchdog: khada3 asks itself a question every 10 seconds, and if it gets no answer for 30 seconds, it is restarted.
 - **Works away from home** with [Tailscale](https://tailscale.com): make khada3 your tailnet's DNS server and your phone goes through it on 4G too. Devices coming through Tailscale are named automatically.
+- **Rules per device and per hour** in `regles.txt`, one per line: `tiktok.com 23-7 Living room TV` blocks TikTok on that device from 23:00 to 07:00; `instagram.com 192.168.1.9` blocks it all day on that IP; `youtube.com 8-16` blocks it for every device during those hours. Edited live, no restart.
+- **Pause blocking** when a site breaks: `/pause 10` on Telegram or the button on the dashboard, `/resume` to block again. Lists are untouched, everything comes back on its own.
+- **Catches devices that slip away.** When a device looks up an encrypted DNS service (Google, Cloudflare, Quad9, NextDNS…) or iCloud Private Relay, its requests would stop going through khada3: you get a suggestion to block it, so the device falls back to khada3.
+- **Weekly report** on Sunday at 20:00, no AI needed: requests per device against the week before, devices that went silent for over a day, most blocked domains.
 - A 30-day history, purged automatically.
 
 ## How it works
@@ -86,7 +90,7 @@ NotifyAccess=main
 WantedBy=multi-user.target
 ```
 
-The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/user/ && systemctl --user enable --now rapport.timer` (and `sudo loginctl enable-linger $USER` so it runs when you are logged out).
+The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/user/ && systemctl --user enable --now rapport.timer`; the weekly one the same way with `semaine.service` and `semaine.timer` (and `sudo loginctl enable-linger $USER` so it runs when you are logged out).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -101,7 +105,7 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 
 **AI agent:** put a [Gemini API key](https://aistudio.google.com/apikey) in `~/.config/khada3/cle` (`chmod 600`) or in `GEMINI_API_KEY`.
 
-**Telegram:** create a bot with [@BotFather](https://t.me/BotFather), put its token in `~/.config/khada3/telegram` (`chmod 600`), start khada3 and send `/start` to your bot: the first chat that writes to it becomes its owner, and it ignores everyone else. Then you get alerts, the report with Block / Ignore buttons, and you can ask questions in the chat (`/report` for the report on demand). The report is sent by `python3 resume.py` (see the timer above).
+**Telegram:** create a bot with [@BotFather](https://t.me/BotFather), put its token in `~/.config/khada3/telegram` (`chmod 600`), start khada3 and send `/start` to your bot: the first chat that writes to it becomes its owner, and it ignores everyone else. Then you get alerts, the report with Block / Ignore buttons, and you can ask questions in the chat (`/report` for the report on demand, `/pause 10` and `/resume`). The report is sent by `python3 resume.py` (see the timer above).
 
 ## Privacy and security
 
@@ -117,11 +121,13 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 |---|---|
 | `khada3.py` | DNS server (UDP and TCP): cache, block, log, list updates |
 | `web.py`, `page.html` | Dashboard and its API |
-| `resume.py` | The agent: daily report and suggestions (`--ecran` prints them instead of sending them) |
+| `resume.py` | The agent: daily report and suggestions; `--semaine` for the weekly report; `--ecran` prints instead of sending |
 | `qui.py` | Company, activity and server country of a domain |
 | `messager.py` | Telegram: alerts, buttons, questions |
 | `bloquer.txt` | Your own blocklist, one domain per line |
+| `regles.txt` | Optional: `domain [hours] [device]` rules (device = IP or the name given in the dashboard) |
 | `rapport.service`, `rapport.timer` | Daily report at 21:00 (systemd user timer) |
+| `semaine.service`, `semaine.timer` | Weekly report, Sunday 20:00 (`resume.py --semaine`) |
 | `test_khada3.py` | Tests |
 
 ## Credits

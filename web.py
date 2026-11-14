@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import messager
 import qui
 import resume
-from khada3 import AUTORISER, BASE, DOMAINE, LISTE, est_bloque, fabricant, verrou
+from khada3 import AUTORISER, BASE, DOMAINE, LISTE, PAUSE, REGLES, est_bloque, fabricant, lire_regle, pause_restante, verrou
 
 PORT_WEB = int(os.environ.get("KHADA3_PORT_WEB", "8053"))
 FICHIER_JETON = Path.home() / ".config/khada3/jeton"
@@ -32,8 +32,9 @@ def jeton():
 
 def etat(ip=None):
     db = sqlite3.connect(BASE)
-    appareils = [dict(zip(("ip", "mac", "nom", "requetes", "bloquees", "dernier"), l)) for l in db.execute(
-        """SELECT a.ip, a.mac, a.nom, COUNT(r.t), COALESCE(SUM(r.bloque), 0), MAX(r.t) FROM appareils a
+    appareils = [dict(zip(("ip", "mac", "nom", "type", "requetes", "bloquees", "dernier"), l)) for l in db.execute(
+        """SELECT a.ip, a.mac, a.nom, d.genre, COUNT(r.t), COALESCE(SUM(r.bloque), 0), MAX(r.t) FROM appareils a
+           LEFT JOIN devinettes d ON d.ip = a.ip
            LEFT JOIN requetes r ON r.ip = a.ip AND r.t >= ? GROUP BY a.ip ORDER BY MAX(r.t) DESC""",
         (time.time() - 86400,))]
     for a in appareils:
@@ -57,7 +58,7 @@ def etat(ip=None):
     propositions = [dict(zip(("id", "domaine", "raison"), l)) for l in db.execute(
         "SELECT id, domaine, raison FROM propositions WHERE etat = 'attente' ORDER BY t DESC")]
     return {"appareils": appareils, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
-            "heures": heures(db, filtre, params)}
+            "heures": heures(db, filtre, params), "pause": round(pause_restante()), "regles": regles()}
 
 
 def heures(db, filtre, params, maintenant=None):
@@ -118,6 +119,45 @@ def nommer(ip, nom):
         if not db.execute("UPDATE appareils SET nom = ? WHERE ip = ?", (nom, ip)).rowcount:
             raise ValueError("appareil inconnu")
     return nom
+
+
+def regles():
+    """Les règles valables de regles.txt, espaces normalisés, commentaires retirés."""
+    lignes = REGLES.read_text().split("\n") if REGLES.exists() else []
+    return [" ".join(l.split("#")[0].split()) for l in lignes if lire_regle(l)]
+
+
+def ajouter_regle(ligne):
+    ligne = " ".join(str(ligne).split("#")[0].split())[:120]  # une seule ligne : pas de retour à la ligne glissé dedans
+    if not lire_regle(ligne):
+        raise ValueError("expected: domain [hours like 23-7] [device]")
+    with verrou:
+        if ligne not in regles():
+            if REGLES.exists() and (texte := REGLES.read_text()) and not texte.endswith("\n"):
+                ajouter(REGLES, "")  # fichier édité à la main sans retour à la ligne final
+            ajouter(REGLES, ligne)
+    return ligne
+
+
+def retirer_regle(ligne):
+    """Par texte, ou par numéro (1 = la première) depuis Telegram."""
+    ligne = " ".join(str(ligne).split())
+    with verrou:
+        actuelles = regles()
+        if ligne.isdigit() and 0 < int(ligne) <= len(actuelles):
+            ligne = actuelles[int(ligne) - 1]
+        if ligne not in actuelles:
+            raise ValueError("no such rule")
+        garder = [l for l in REGLES.read_text().split("\n") if " ".join(l.split("#")[0].split()) != ligne]
+        REGLES.write_text("\n".join(garder))
+    return ligne
+
+
+def pause(minutes):
+    """Coupe le blocage pendant quelques minutes, le temps qu'un site cassé marche ; 0 le remet."""
+    minutes = max(0, min(int(minutes), 24 * 60))
+    PAUSE.write_text(str(time.time() + minutes * 60))
+    return minutes
 
 
 def decider(ident, accepter):
@@ -185,6 +225,12 @@ class Gestion(BaseHTTPRequestHandler):
                 return self.repondre(200, {"debloque": debloquer(str(corps.get("domaine", "")))})
             if self.path == "/api/nommer":
                 return self.repondre(200, {"nom": nommer(str(corps.get("ip", "")), str(corps.get("nom", "")))})
+            if self.path == "/api/regle":
+                if corps.get("retirer"):
+                    return self.repondre(200, {"retiree": retirer_regle(corps.get("ligne", ""))})
+                return self.repondre(200, {"ajoutee": ajouter_regle(corps.get("ligne", ""))})
+            if self.path == "/api/pause":
+                return self.repondre(200, {"minutes": pause(corps.get("minutes", 10))})
             if self.path == "/api/question":
                 return self.repondre(200, {"reponse": demander(str(corps.get("question", ""))[:500])})
         except (ValueError, TypeError) as e:

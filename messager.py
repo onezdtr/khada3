@@ -64,7 +64,26 @@ def traiter(maj, chat):
         return f"{domaine} blocked." if action == "b" else f"{domaine} ignored."
     texte = maj.get("message", {}).get("text", "").strip()
     if texte in ("/start", "/help"):
-        return "khada3 is listening. Ask me anything about your network, or send /report for the daily report."
+        return ("khada3 is listening. Ask me anything about your network, send /report for the daily report,\n"
+                "/pause 10 if a site breaks (no blocking for 10 min), /resume to block again,\n"
+                "/rules to list the rules, /rule tiktok.com 23-7 TV to add one, /unrule 1 to remove one.")
+    if texte.split()[:1] == ["/pause"]:
+        valeur = (texte.split()[1:] or ["10"])[0]
+        if not valeur.isdigit():
+            return "Usage: /pause 10 (minutes)."
+        minutes = web.pause(valeur)
+        return f"Blocking paused for {minutes} min." if minutes else "Blocking is on."
+    if texte == "/resume":
+        web.pause(0)
+        return "Blocking is on again."
+    commande, _, reste = texte.partition(" ")
+    if commande == "/rules":
+        return "\n".join(f"{i}. {r}" for i, r in enumerate(web.regles(), 1)) or "No rule. Add one: /rule tiktok.com 23-7 TV"
+    if commande in ("/rule", "/unrule"):
+        try:
+            return f"Rule added: {web.ajouter_regle(reste)}" if commande == "/rule" else f"Rule removed: {web.retirer_regle(reste)}"
+        except ValueError as e:
+            return f"Nothing done: {e}"
     if texte == "/report":
         rapport, propositions = resume.rapport()
         for p in propositions:

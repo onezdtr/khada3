@@ -183,6 +183,7 @@ def test_agent_ne_peut_proposer_que_des_pisteurs_reconnus():
         db.executescript("CREATE TABLE requetes (t REAL, ip TEXT, domaine TEXT, bloque INTEGER);"
                          "CREATE TABLE appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL, nom TEXT);"
                          "CREATE TABLE domaines (domaine TEXT PRIMARY KEY, ip TEXT);"
+                         "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);"
                          "CREATE TABLE propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente');")
         for dom in ("connectivitycheck.gstatic.com", "unagi-na.amazon.com", "deja.bloque.com"):
             db.execute("INSERT INTO requetes VALUES (?, '10.0.0.2', ?, 0)", (time.time(), dom))
@@ -227,7 +228,8 @@ def base_test():
     db.executescript("CREATE TABLE requetes (t REAL, ip TEXT, domaine TEXT, bloque INTEGER);"
                      "CREATE TABLE appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL, nom TEXT);"
                      "CREATE TABLE domaines (domaine TEXT PRIMARY KEY, ip TEXT);"
-                     "CREATE TABLE habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));")
+                     "CREATE TABLE habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));"
+                     "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);")
     return db
 
 
@@ -347,6 +349,118 @@ def test_noms_tailscale():
         assert khada3.nom_tailscale("100.64.0.2") == ""  # pas de Tailscale : pas de nom, pas de plantage
     finally:
         os.environ["PATH"] = chemin
+
+
+def test_pause_du_blocage():
+    import messager
+    import web
+    avant, noter, relayer = khada3.PAUSE, khada3.noter, khada3.relayer
+    d = Path(tempfile.mkdtemp())
+    khada3.PAUSE = web.PAUSE = d / "pause"
+    khada3.noter = lambda *a: None
+    khada3.relayer = lambda *a: REPONSE
+    khada3.liste.domaines, khada3.liste.date = {"exemple.fr"}, khada3.LISTE.stat().st_mtime if khada3.LISTE.exists() else None
+    try:
+        assert khada3.traiter(REQUETE, "test")[3] & 0x0F == 3  # bloqué
+        assert messager.traiter({"message": {"text": "/pause 5"}}, "1") == "Blocking paused for 5 min."
+        assert 290 < khada3.pause_restante() <= 300
+        assert messager.traiter({"message": {"text": "/pause abc"}}, "1").startswith("Usage")
+        khada3.cache.clear()
+        assert khada3.traiter(REQUETE, "test")[2:] == REPONSE[2:]  # en pause : relayé normalement
+        assert khada3.est_bloque("exemple.fr")  # la liste ne change pas : débloquer pendant une pause reste juste
+        assert messager.traiter({"message": {"text": "/resume"}}, "1") == "Blocking is on again."
+        assert khada3.pause_restante() == 0 and khada3.traiter(REQUETE, "test")[3] & 0x0F == 3
+        assert web.pause(99999) == 1440  # jamais plus d'un jour
+        (d / "pause").write_text("pas un nombre")
+        assert khada3.pause_restante() == 0  # fichier abîmé : le blocage reste actif
+    finally:
+        khada3.PAUSE, khada3.noter, khada3.relayer = avant, noter, relayer
+        web.PAUSE = avant
+        khada3.liste.date = None  # relire le vrai fichier au prochain appel
+        khada3.cache.clear()
+
+
+def test_regles_par_appareil():
+    avant, base = khada3.REGLES, khada3.db
+    khada3.REGLES = Path(tempfile.mkdtemp()) / "regles.txt"
+    khada3.REGLES.write_text("tiktok.com 23-7 TV du Salon  # la nuit\ninstagram.com 192.168.1.9\nyoutube.com 8-16\npas un domaine 192.168.1.9\n")
+    khada3.db = base_test()
+    khada3.db.execute("INSERT INTO appareils VALUES ('192.168.1.5', '', 0, 'tv du salon')")
+    try:
+        r = khada3.bloque_par_regle
+        assert r("192.168.1.5", "www.tiktok.com", 23) and r("192.168.1.5", "tiktok.com", 6)  # passe minuit, nom sans casse
+        assert not r("192.168.1.5", "tiktok.com", 7) and not r("192.168.1.6", "tiktok.com", 23)  # 7 h exclu, autre appareil
+        assert r("192.168.1.9", "instagram.com", 12) and not r("192.168.1.5", "instagram.com", 12)  # IP, toute la journée
+        assert r("192.168.1.6", "youtube.com", 8) and not r("192.168.1.6", "youtube.com", 16)  # sans appareil : tous
+        assert len(khada3.regles()) == 3  # la ligne invalide est ignorée
+    finally:
+        khada3.REGLES, khada3.db = avant, base
+
+
+def test_contournement_propose_une_seule_fois():
+    db = base_test()
+    db.execute("CREATE TABLE propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente')")
+    db.execute("INSERT INTO appareils VALUES ('192.168.1.5', '', 0, 'iphone')")
+    p = khada3.contournement(db, "192.168.1.5", "mozilla.cloudflare-dns.com")
+    assert p["domaine"] == "mozilla.cloudflare-dns.com" and p["raison"].startswith("iphone tried Cloudflare encrypted DNS")
+    assert khada3.contournement(db, "192.168.1.5", "mozilla.cloudflare-dns.com") is None  # déjà proposé
+    assert khada3.contournement(db, "192.168.1.5", "example.com") is None
+    assert khada3.contournement(db, "192.168.1.5", "mask.icloud.com")["raison"].endswith("fall back to khada3.")
+
+
+def test_rapport_de_la_semaine():
+    import resume
+    db = base_test()
+    jour, maintenant = 86400, 1_000_000_000
+    db.executemany("INSERT INTO appareils VALUES (?, '', 0, ?)", [("1.1.1.5", "tv"), ("1.1.1.6", "iphone")])
+    db.executemany("INSERT INTO requetes VALUES (?, ?, ?, ?)",
+                   [(maintenant - 10 * jour, "1.1.1.5", "a.com", 0)] * 4 +  # semaine d'avant : 4
+                   [(maintenant - 3 * jour, "1.1.1.5", "pub.com", 1)] * 6 +  # cette semaine : 6, puis plus rien
+                   [(maintenant - 3600, "1.1.1.6", "b.com", 0)])
+    texte = resume.semaine(maintenant, db)
+    assert "- tv: 6 requests (+50 % vs last week), 6 blocked" in texte
+    assert "- iphone: 1 requests (new this week), 0 blocked" in texte
+    assert texte.split("no longer using khada3:")[1].split("\n")[1].startswith("- tv (last request")
+    assert "- pub.com: 6" in texte
+    assert "Is the server running" in resume.semaine(maintenant + 30 * jour, db)
+
+
+def test_regles_depuis_telegram_et_la_page():
+    import messager
+    import web
+    avant = web.REGLES, khada3.REGLES
+    web.REGLES = Path(tempfile.mkdtemp()) / "regles.txt"
+    web.REGLES.write_text("youtube.com 8-16  # école")  # édité à la main, sans retour à la ligne final
+    try:
+        m = lambda texte: messager.traiter({"message": {"text": texte}}, "1")
+        assert m("/rule  tiktok.com 23-7  TV du salon") == "Rule added: tiktok.com 23-7 TV du salon"
+        assert m("/rule tiktok.com 23-7 TV du salon") == "Rule added: tiktok.com 23-7 TV du salon"  # pas de doublon
+        assert m("/rule pas un domaine").startswith("Nothing done")
+        assert m("/rule a.com\nb.com") == "Rule added: a.com b.com"  # jamais deux lignes : « b.com » devient le nom d'appareil
+        assert m("/rules") == "1. youtube.com 8-16\n2. tiktok.com 23-7 TV du salon\n3. a.com b.com"
+        assert m("/unrule 3") == "Rule removed: a.com b.com"
+        assert m("/unrule tiktok.com 23-7 TV du salon").startswith("Rule removed")
+        assert m("/unrule 9").startswith("Nothing done")
+        assert web.REGLES.read_text().count("youtube.com 8-16  # école") == 1 and web.regles() == ["youtube.com 8-16"]
+        khada3.REGLES = web.REGLES
+        assert khada3.regles() == [("youtube.com", 8, 16, "")]  # le DNS lit bien ce que la page écrit
+    finally:
+        web.REGLES, khada3.REGLES = avant
+
+
+def test_deviner_le_type_d_appareil():
+    db = base_test()
+    db.executemany("INSERT INTO appareils VALUES (?, '', 0, ?)", [("10.0.0.2", None), ("10.0.0.3", None), ("10.0.0.4", "salon")])
+    for ip, domaine in [("10.0.0.2", "auth.np.playstation.net"), ("10.0.0.2", "captive.apple.com"),  # téléphone avec l'appli PS
+                        ("10.0.0.2", "playstation.net"), ("10.0.0.3", "eu.lgtvsdp.com"), ("10.0.0.3", "android.clients.google.com"),
+                        ("10.0.0.6", "android.clients.google.com"), ("10.0.0.6", "mirrors.fedoraproject.org"),  # Linux avec Brave
+                        ("10.0.0.4", "captive.apple.com"), ("10.0.0.5", "example.com")]:
+        khada3.deviner(db, ip, domaine)
+    assert khada3.nom_appareil(db, "10.0.0.2") == "Apple device 10.0.0.2"  # le test réseau d'Apple bat l'appli PlayStation
+    assert khada3.nom_appareil(db, "10.0.0.3") == "LG TV 10.0.0.3"  # la TV n'est pas rétrogradée en « Android »
+    assert khada3.nom_appareil(db, "10.0.0.4") == "salon"  # le nom donné passe avant
+    assert db.execute("SELECT genre FROM devinettes WHERE ip = '10.0.0.6'").fetchone() == ("Linux computer",)
+    assert db.execute("SELECT COUNT(*) FROM devinettes").fetchone()[0] == 4
 
 
 if __name__ == "__main__":

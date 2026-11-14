@@ -51,6 +51,8 @@
   button.bloquer { background: none; border: 1px solid var(--trait); color: var(--doux); font: inherit; font-size: 12px; padding: 2px 8px;
     border-radius: 3px; cursor: pointer; }
   button.bloquer:hover { border-color: var(--rouge); color: var(--rouge); }
+  #pause { margin-left: auto; }
+  #pause.active { border-color: var(--rouge); color: var(--rouge); }
   .console form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .console label { color: var(--neon); }
   .console input { flex: 1; min-width: 180px; background: none; border: 0; color: var(--texte); font: inherit; padding: 6px 0; caret-color: var(--neon); }
@@ -77,6 +79,11 @@
   button.oui { background: none; border: 1px solid var(--rouge); color: var(--rouge); font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 3px; cursor: pointer; }
   button.oui:hover { background: var(--rouge); color: var(--fond); }
   #bloc-propositions { border-color: rgb(255 77 109 / .45); }
+  .regle { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  .regle input { flex: 1; min-width: 180px; background: none; border: 1px solid var(--trait); border-radius: 3px; color: var(--texte);
+    font: inherit; font-size: 13px; padding: 4px 8px; }
+  #erreur-regle { color: var(--rouge); margin: 6px 0 0; }
+  #erreur-regle:empty { display: none; }
   .legende { display: flex; gap: 14px; margin: -4px 0 10px; color: var(--doux); font-size: 12px; }
   .legende span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; background: var(--neon); }
   .legende .rouge::before { background: var(--rouge); }
@@ -104,6 +111,7 @@
   <h1>◉ KHADA3</h1>
   <span class="ecoute" id="ecoute">LISTENING</span>
   <p id="resume-chiffres">connecting…</p>
+  <button type="button" class="bloquer" id="pause" title="If a site breaks: no blocking for 10 minutes">PAUSE 10 MIN</button>
 </header>
 <main>
   <div class="colonne">
@@ -135,6 +143,16 @@
       <h2 id="t-propositions">Agent suggestions</h2>
       <ul id="propositions"></ul>
     </section>
+    <section aria-labelledby="t-regles">
+      <h2 id="t-regles">Rules · per device and hour</h2>
+      <ul id="regles"></ul>
+      <form id="form-regle" class="regle">
+        <label for="regle" class="petit">domain [hours] [device]</label>
+        <input id="regle" placeholder="tiktok.com 23-7 Living room TV" maxlength="120" autocomplete="off">
+        <button type="submit" class="bloquer">add</button>
+      </form>
+      <p class="petit" id="erreur-regle" aria-live="polite"></p>
+    </section>
     <section aria-labelledby="t-pays">
       <h2 id="t-pays">Where the traffic goes · 24 h</h2>
       <ul id="pays"></ul>
@@ -153,7 +171,7 @@
 <script>
 const jeton = new URLSearchParams(location.search).get("jeton") || "";
 const entetes = { "X-Jeton": jeton, "Content-Type": "application/json" };
-let choisi = null, appareils = [], vus = {}, heures = [], heureChoisie = null, survol = null;  // vus : dernière requête connue par appareil, pour faire « pinger » son point
+let choisi = null, appareils = [], vus = {}, heures = [], heureChoisie = null, survol = null, enPause = false;  // vus : dernière requête connue par appareil, pour faire « pinger » son point
 const calme = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // les domaines viennent du réseau : on n'écrit jamais de HTML avec, seulement du texte
@@ -171,6 +189,10 @@ async function rafraichir() {
   catch { return signal(false, "khada3 is not responding"); }
   if (!r.ok) return signal(false, "access denied: open the URL printed at startup, with its token");
   const etat = await r.json();
+  enPause = etat.pause > 0;
+  const bouton = document.getElementById("pause");
+  bouton.classList.toggle("active", enPause);
+  bouton.textContent = enPause ? `BLOCKING PAUSED · ${Math.ceil(etat.pause / 60)} MIN · RESUME` : "PAUSE 10 MIN";
   const avant = appareils;
   appareils = etat.appareils;
   const total = appareils.reduce((s, a) => s + a.requetes, 0), bloquees = appareils.reduce((s, a) => s + a.bloquees, 0);
@@ -185,7 +207,7 @@ async function rafraichir() {
   document.getElementById("appareils").replaceChildren(
     el("li", {}, el("button", { className: "appareil", ariaPressed: String(!choisi), onclick: () => choisir(null), textContent: "whole network" })),
     ...appareils.map((a) => el("li", { className: "groupe" },
-      el("button", { className: "appareil", ariaPressed: String(choisi === a.ip), onclick: () => choisir(a.ip), title: `${a.ip} ${a.mac} ${a.fabricant}` },
+      el("button", { className: "appareil", ariaPressed: String(choisi === a.ip), onclick: () => choisir(a.ip), title: `${a.ip} ${a.mac} ${a.fabricant}${a.type ? " · probably " + a.type : ""}` },
         nomDe(a), el("span", { textContent: a.requetes })),
       el("button", { className: "renommer", ariaLabel: `Rename ${nomDe(a)}`, title: "Rename", textContent: "✎", onclick: () => renommer(a) }))));
 
@@ -201,6 +223,10 @@ async function rafraichir() {
     el("span", { className: "d" }, p.domaine, el("small", { className: "qui", textContent: p.raison })),
     el("button", { className: "oui", textContent: "block", onclick: () => decider(p.id, true) }),
     el("button", { className: "bloquer", textContent: "ignore", onclick: () => decider(p.id, false) }))));
+
+  document.getElementById("regles").replaceChildren(...etat.regles.map((r) => el("li", { className: "ligne" },
+    el("span", { className: "d", textContent: r }),
+    el("button", { className: "bloquer", textContent: "remove", onclick: () => regle(r, true) }))));
 
   const max = Math.max(1, ...etat.pays.map((p) => p.requetes));
   document.getElementById("pays").replaceChildren(...etat.pays.map((p) => el("li", { className: "barre" },
@@ -258,10 +284,10 @@ function signal(ok, texte) {
 const regions = new Intl.DisplayNames(["en"], { type: "region" });
 const nomPays = (code) => { try { return code === "?" ? "unknown" : regions.of(code); } catch { return code; } };
 
-// le nom donné, sinon le fabricant (« Apple »), sinon l'IP
+// le nom donné, sinon le type deviné (« Samsung TV »), sinon le fabricant (« Apple »), sinon l'IP
 function nomDe(a) {
   if (a.nom) return a.nom;
-  const marque = a.fabricant && a.fabricant !== "private MAC address" ? a.fabricant.split(",")[0].replace(/( (Inc|Ltd|Co|Corp|Corporation|Technologies|Technology|Electronics|Mobile|Software)\.?)+$/i, "") : "";
+  const marque = a.type ? a.type : a.fabricant && a.fabricant !== "private MAC address" ? a.fabricant.split(",")[0].replace(/( (Inc|Ltd|Co|Corp|Corporation|Technologies|Technology|Electronics|Mobile|Software)\.?)+$/i, "") : "";
   return marque ? `${marque.slice(0, 22)} · ${a.ip.split(".").pop()}` : a.ip;
 }
 
@@ -273,6 +299,11 @@ async function renommer(a) {
 }
 
 function choisir(ip) { choisi = ip; rafraichir(); }
+
+document.getElementById("pause").onclick = async () => {
+  await fetch("/api/pause", { method: "POST", headers: entetes, body: JSON.stringify({ minutes: enPause ? 0 : 10 }) });
+  rafraichir();
+};
 
 async function decider(id, accepter) {
   await fetch("/api/decider", { method: "POST", headers: entetes, body: JSON.stringify({ id, accepter }) });
@@ -290,6 +321,14 @@ async function bloquer(domaine) {
   await fetch("/api/bloquer", { method: "POST", headers: entetes, body: JSON.stringify({ domaine }) });
   rafraichir();
 }
+
+async function regle(ligne, retirer = false) {
+  const r = await fetch("/api/regle", { method: "POST", headers: entetes, body: JSON.stringify({ ligne, retirer }) });
+  document.getElementById("erreur-regle").textContent = r.ok ? "" : (await r.json()).erreur;
+  if (r.ok && !retirer) document.getElementById("regle").value = "";
+  rafraichir();
+}
+document.getElementById("form-regle").onsubmit = (e) => { e.preventDefault(); regle(document.getElementById("regle").value); };
 
 async function demander(question) {
   const sortie = document.getElementById("reponse"), boutons = document.querySelectorAll(".console button");

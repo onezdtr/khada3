@@ -30,7 +30,28 @@ URL_PUBLIQUE = os.environ.get("KHADA3_LISTE_URL", "https://raw.githubusercontent
 ECOUTE = os.environ.get("KHADA3_ECOUTE", "127.0.0.1")  # 0.0.0.0 sur le serveur, jamais sur un réseau qui n'est pas le nôtre
 PORT = int(os.environ.get("KHADA3_PORT", "5300"))  # 53 sur le serveur
 AMONTS = [(ip.strip(), 53) for ip in os.environ.get("KHADA3_AMONT", "1.1.1.1,9.9.9.9").split(",")]  # le suivant si le premier ne répond pas
+REGLES = ICI / "regles.txt"  # blocages pour un seul appareil, éventuellement à certaines heures
+PAUSE = ICI / "pause"  # date de fin d'une pause du blocage ; un fichier, car web.py importe une seconde copie de ce module
 SANTE = "sante.khada3.invalid"  # question que khada3 se pose à lui-même : répondue sur place, jamais notée
+
+# DNS chiffré et Relais privé iCloud : l'appareil qui les utilise ne passe plus par khada3 (un domaine couvre ses sous-domaines)
+CONTOURNEMENTS = {"dns.google": "Google encrypted DNS", "cloudflare-dns.com": "Cloudflare encrypted DNS",
+                  "one.one.one.one": "Cloudflare encrypted DNS", "dns.quad9.net": "Quad9 encrypted DNS",
+                  "doh.opendns.com": "OpenDNS encrypted DNS", "dns.nextdns.io": "NextDNS encrypted DNS",
+                  "dns.adguard-dns.com": "AdGuard encrypted DNS", "dns.mullvad.net": "Mullvad encrypted DNS",
+                  "doh.mullvad.net": "Mullvad encrypted DNS", "mask.icloud.com": "iCloud Private Relay",
+                  "mask-h2.icloud.com": "iCloud Private Relay"}
+
+# domaine qui trahit le type d'appareil ; le plus haut gagne. Les tests réseau d'Apple, Android et Windows passent
+# avant PlayStation et Roku : un téléphone avec leur appli reste un téléphone. Les TV d'abord : elles n'ont pas ces tests.
+# Android en dernier : Chrome et Brave appellent ses domaines (notifications) sur tous les systèmes.
+SIGNATURES = {domaine: (rang, genre) for rang, (domaine, genre) in enumerate([
+    ("samsungotn.net", "Samsung TV"), ("lgtvsdp.com", "LG TV"), ("lgsmartad.com", "LG TV"),
+    ("firetvcaptiveportal.com", "Fire TV"), ("nintendowifi.net", "Nintendo console"),
+    ("captive.apple.com", "Apple device"), ("msftconnecttest.com", "Windows PC"),
+    ("nmcheck.gnome.org", "Linux computer"), ("connectivity-check.ubuntu.com", "Linux computer"),
+    ("fedoraproject.org", "Linux computer"), ("connectivitycheck.android.com", "Android device"),
+    ("android.clients.google.com", "Android device"), ("playstation.net", "PlayStation"), ("roku.com", "Roku")])}
 
 verrou = threading.RLock()  # réentrant : décider d'une proposition puis bloquer le domaine le reprend
 db = sqlite3.connect(BASE, check_same_thread=False)
@@ -41,6 +62,7 @@ CREATE INDEX IF NOT EXISTS requetes_t ON requetes (t);
 CREATE TABLE IF NOT EXISTS domaines (domaine TEXT PRIMARY KEY, ip TEXT);
 CREATE TABLE IF NOT EXISTS propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente');
 CREATE TABLE IF NOT EXISTS habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));
+CREATE TABLE IF NOT EXISTS devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);
 """)
 if "nom" not in [c[1] for c in db.execute("PRAGMA table_info(appareils)")]:
     db.execute("ALTER TABLE appareils ADD COLUMN nom TEXT")  # bases créées avant les noms d'appareils
@@ -120,8 +142,7 @@ class Liste:
                 if len(mots) == 1 and "." in mots[0] and mots[0] != "0.0.0.0":
                     self.domaines.add(mots[0])
             self.date = date
-        morceaux = domaine.split(".")
-        return any(".".join(morceaux[i:]) in self.domaines for i in range(len(morceaux)))
+        return any(d in self.domaines for d in parents(domaine))
 
 
 liste, autorises, publique, candidats = Liste(LISTE), Liste(AUTORISER), Liste(PUBLIQUE), Liste(CANDIDATS)
@@ -129,6 +150,68 @@ liste, autorises, publique, candidats = Liste(LISTE), Liste(AUTORISER), Liste(PU
 
 def est_bloque(domaine):
     return not autorises.contient(domaine) and (liste.contient(domaine) or publique.contient(domaine))
+
+
+def parents(domaine):
+    """exemple.fr pour www.exemple.fr, etc. : le domaine et tous ceux qui le contiennent."""
+    morceaux = domaine.split(".")
+    return [".".join(morceaux[i:]) for i in range(len(morceaux))]
+
+
+regles_lues = {"date": None, "regles": []}
+
+
+def regles():
+    """Lignes de regles.txt « domaine [heures] appareil », ex. « tiktok.com 23-7 TV du salon » ; relu dès qu'il change.
+    L'appareil est son IP ou le nom donné dans le tableau de bord, sans appareil la règle vaut pour tous ;
+    sans heures, elle vaut tout le temps."""
+    date = REGLES.stat().st_mtime if REGLES.exists() else None
+    if date != regles_lues["date"]:
+        lignes = REGLES.read_text().split("\n") if date else []
+        regles_lues.update(date=date, regles=[r for ligne in lignes if (r := lire_regle(ligne))])
+    return regles_lues["regles"]
+
+
+def lire_regle(ligne):
+    """(domaine, début, fin, appareil) d'une ligne de regles.txt, ou None si elle n'est pas valable."""
+    mots = ligne.split("#")[0].split()
+    heures = re.fullmatch(r"(\d{1,2})-(\d{1,2})", mots[1]) if len(mots) > 1 else None
+    debut, fin = (int(heures[1]), int(heures[2])) if heures else (0, 24)
+    if not mots or not DOMAINE.match(mots[0].lower()) or debut > 24 or fin > 24:
+        return None
+    return mots[0].lower(), debut, fin, " ".join(mots[2:] if heures else mots[1:]).lower()
+
+
+def bloque_par_regle(ip, domaine, heure):
+    """Vrai si une règle de regles.txt bloque ce domaine pour cet appareil à cette heure (23-7 passe minuit)."""
+    for cible, debut, fin, appareil in regles():
+        if cible in parents(domaine) and (debut <= heure < fin if debut <= fin else heure >= debut or heure < fin):
+            if appareil in ("", ip):
+                return True
+            with verrou:  # le nom n'est cherché que si le domaine et l'heure correspondent
+                nom = db.execute("SELECT nom FROM appareils WHERE ip = ?", (ip,)).fetchone()
+            if nom and (nom[0] or "").lower() == appareil:
+                return True
+    return False
+
+
+def contournement(db, ip, domaine):
+    """Propose de bloquer un service de contournement la 1re fois qu'un appareil le demande ; renvoie la proposition."""
+    service = next((CONTOURNEMENTS[d] for d in parents(domaine) if d in CONTOURNEMENTS), None)
+    if not service:
+        return None
+    raison = (f"{nom_appareil(db, ip)} tried {service}: its requests would stop going through khada3. "
+              "Blocking it makes the device fall back to khada3.")
+    curseur = db.execute("INSERT OR IGNORE INTO propositions (t, domaine, raison) VALUES (?, ?, ?)", (time.time(), domaine, raison))
+    return {"id": curseur.lastrowid, "domaine": domaine, "raison": raison} if curseur.rowcount else None
+
+
+def pause_restante():
+    """Secondes de pause du blocage qui restent (0 : le blocage marche)."""
+    try:
+        return max(0.0, float(PAUSE.read_text()) - time.time())
+    except (OSError, ValueError):
+        return 0.0
 
 
 def telecharger(urls, chemin, taille_min):
@@ -219,8 +302,19 @@ def nommer_tailscale(db):
 
 
 def nom_appareil(db, ip):
-    nom, mac = db.execute("SELECT nom, mac FROM appareils WHERE ip = ?", (ip,)).fetchone() or (None, "")
-    return nom or f"{fabricant(mac or '') or 'device'} {ip}"
+    """Le nom donné, sinon le type deviné, sinon le fabricant, suivi de l'IP."""
+    nom, mac, genre = db.execute("""SELECT a.nom, a.mac, d.genre FROM appareils a LEFT JOIN devinettes d ON d.ip = a.ip
+                                    WHERE a.ip = ?""", (ip,)).fetchone() or (None, "", None)
+    return nom or f"{genre or fabricant(mac or '') or 'device'} {ip}"
+
+
+def deviner(db, ip, domaine):
+    """Retient le type de l'appareil quand ce domaine le trahit, si la signature est plus sûre que la précédente."""
+    for d in parents(domaine):
+        if d in SIGNATURES:
+            rang, genre = SIGNATURES[d]
+            db.execute("""INSERT INTO devinettes VALUES (?, ?, ?) ON CONFLICT (ip) DO UPDATE
+                          SET genre = excluded.genre, rang = excluded.rang WHERE excluded.rang < devinettes.rang""", (ip, genre, rang))
 
 
 def nouveautes(db, ip, domaine):
@@ -248,9 +342,13 @@ def noter(ip, domaine, bloque):
         if not vu_le:
             db.execute("INSERT INTO appareils (ip, mac, vu_le, nom) VALUES (?, ?, ?, ?)", (ip, mac_de(ip), time.time(), nom_tailscale(ip) or None))
         db.execute("INSERT INTO requetes VALUES (?, ?, ?, ?)", (time.time(), ip, domaine, int(bloque)))
+        deviner(db, ip, domaine)  # avant le nom : l'alerte « nouvel appareil » en profite déjà
         vues = [] if bloque else nouveautes(db, ip, domaine)  # bloqué : l'appareil n'a rien contacté
+        proposition = None if bloque else contournement(db, ip, domaine)
         nom = nom_appareil(db, ip)
         db.commit()
+    if proposition:
+        threading.Thread(target=messager.proposer, args=(proposition,)).start()
     if not vu_le:
         mac = mac_de(ip)
         alerter(f"New device on the network: {nom} {mac}\nFirst domain: {domaine}")
@@ -353,7 +451,7 @@ def traiter(paquet, ip, tcp=False):
         return None
     if domaine == SANTE:
         return reponse_vide(paquet, fin, 0)
-    bloque = est_bloque(domaine)
+    bloque = (est_bloque(domaine) or bloque_par_regle(ip, domaine, time.localtime().tm_hour)) and not pause_restante()  # pause lue seulement pour les domaines bloqués
     if bloque:
         reponse = reponse_vide(paquet, fin, 3)
     elif not (reponse := depuis_cache(paquet, fin)):
@@ -390,6 +488,14 @@ class GestionTCP(socketserver.BaseRequestHandler):
                 self.request.sendall(len(reponse).to_bytes(2, "big") + reponse)
         except OSError:
             pass
+
+
+def deviner_depuis_historique(db):
+    """Au premier démarrage avec cette fonction : devine les appareils déjà vus."""
+    if not db.execute("SELECT 1 FROM devinettes LIMIT 1").fetchone():
+        for ip, domaine in db.execute("SELECT DISTINCT ip, domaine FROM requetes").fetchall():
+            deviner(db, ip, domaine)
+        db.commit()
 
 
 def apprendre(db):
@@ -447,6 +553,7 @@ def veiller():
 if __name__ == "__main__":
     import web  # ici, pas en haut : web importe ce module
     apprendre(db)
+    deviner_depuis_historique(db)
     nommer_tailscale(db)
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     tcp = socketserver.ThreadingTCPServer((ECOUTE, PORT), GestionTCP)
