@@ -107,7 +107,7 @@ def test_liste_format_hosts():
         f.write_text("# en-tête\n127.0.0.1 localhost\n0.0.0.0 0.0.0.0\n0.0.0.0 ads.exemple.com  # pub\n127.0.0.1 traque.fr\n::1 ip6-localhost\n")
         liste = khada3.Liste(f)
         assert liste.contient("ads.exemple.com") and liste.contient("x.traque.fr")
-        assert liste.domaines == {"ads.exemple.com", "traque.fr"}
+        assert liste() == {"ads.exemple.com", "traque.fr"}
 
 
 def test_autoriser_passe_avant_les_listes():
@@ -320,9 +320,10 @@ def test_amont_de_secours_et_cache_perime():
 
 
 def test_question_de_sante_repondue_sur_place():
-    q = bytes.fromhex("beef01000001000000000000") + b"".join(bytes([len(m)]) + m.encode() for m in khada3.SANTE.split(".")) + b"\x00\x00\x01\x00\x01"
+    q = khada3.question_sante()  # celle que le chien de garde envoie vraiment
+    assert khada3.lire_question(q)[0] == khada3.SANTE
     r = khada3.traiter(q, "127.0.0.1")
-    assert r[:2] == b"\xbe\xef" and r[3] & 0x0F == 0
+    assert r[:2] == q[:2] and r[3] & 0x0F == 0
 
 
 def test_noms_tailscale():
@@ -359,7 +360,7 @@ def test_pause_du_blocage():
     khada3.PAUSE = web.PAUSE = d / "pause"
     khada3.noter = lambda *a: None
     khada3.relayer = lambda *a: REPONSE
-    khada3.liste.domaines, khada3.liste.date = {"exemple.fr"}, khada3.LISTE.stat().st_mtime if khada3.LISTE.exists() else None
+    khada3.liste.valeur, khada3.liste.date = {"exemple.fr"}, khada3.LISTE.stat().st_mtime if khada3.LISTE.exists() else None
     try:
         assert khada3.traiter(REQUETE, "test")[3] & 0x0F == 3  # bloqué
         assert messager.traiter({"message": {"text": "/pause 5"}}, "1") == "Blocking paused for 5 min."
@@ -480,6 +481,80 @@ def test_hors_khada3():
     assert db.execute("SELECT ip, vu_le FROM hors_khada3").fetchall() == [("192.168.1.177", 2)]
     db.execute("INSERT INTO appareils VALUES ('192.168.1.177', 'aa:bb:cc:00:00:03', 3, NULL)")
     assert khada3.hors_khada3(db, arp, "192.168.1.1", 3) == [] and not db.execute("SELECT * FROM hors_khada3").fetchall()
+
+
+def test_appareil_suivi_par_sa_mac():
+    macs, avant = {}, khada3.mac_de
+    khada3.mac_de = lambda ip: macs.get(ip, "")
+    try:
+        db = base_test()
+        macs["192.168.1.50"] = "aa:aa:aa:aa:aa:aa"
+        assert khada3.identifier(db, "192.168.1.50") is None  # nouveau : alerte
+        db.execute("UPDATE appareils SET nom = 'TV du salon' WHERE ip = '192.168.1.50'")
+        db.execute("INSERT INTO devinettes VALUES ('192.168.1.50', 'LG TV', 0)")
+        vu = khada3.identifier(db, "192.168.1.50")
+        assert vu is not None  # même appareil : pas d'alerte
+        # la box redonne la .50 à un téléphone, puis la TV revient en .51
+        macs["192.168.1.50"], macs["192.168.1.51"] = "bb:bb:bb:bb:bb:bb", "aa:aa:aa:aa:aa:aa"
+        assert khada3.identifier(db, "192.168.1.50") is None  # le téléphone est nouveau, il n'hérite pas du nom
+        assert khada3.identifier(db, "192.168.1.51") == vu  # la TV retrouve tout
+        assert dict(db.execute("SELECT ip, nom FROM appareils")) == {"192.168.1.50": None, "192.168.1.51": "TV du salon"}
+        assert dict(db.execute("SELECT ip, genre FROM devinettes")) == {"192.168.1.51": "LG TV"}
+        assert khada3.identifier(db, "100.64.0.2") is None and khada3.identifier(db, "100.64.0.2") is not None  # sans MAC : l'IP
+        db.execute("INSERT INTO appareils VALUES ('192.168.1.60', '', 0, NULL)")
+        macs["192.168.1.60"] = "cc:cc:cc:cc:cc:cc"
+        assert khada3.identifier(db, "192.168.1.60") == 0  # MAC apprise plus tard : retenue, pas d'alerte
+        assert db.execute("SELECT mac FROM appareils WHERE ip = '192.168.1.60'").fetchone() == ("cc:cc:cc:cc:cc:cc",)
+    finally:
+        khada3.mac_de = avant
+
+
+def test_chien_de_garde_interroge_la_bonne_adresse():
+    import socket
+    envois, avant = [], (khada3.ECOUTE, socket.socket)
+
+    class Faux:
+        def __init__(self, *a): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def settimeout(self, t): pass
+        def sendto(self, paquet, adresse): envois.append(adresse); self.paquet = paquet
+        def recv(self, n): return self.paquet[:2]
+    socket.socket = Faux
+    try:
+        for ecoute, attendu in (("0.0.0.0", "127.0.0.1"), ("192.168.1.2", "192.168.1.2"), ("127.0.0.1", "127.0.0.1")):
+            khada3.ECOUTE = ecoute
+            assert khada3.en_forme() and envois[-1] == (attendu, khada3.PORT)
+    finally:
+        khada3.ECOUTE, socket.socket = avant
+
+
+def test_bot_ignore_les_inconnus():
+    import messager
+    d = Path(tempfile.mkdtemp())
+    (d / "telegram").write_text("jeton")
+    (d / "telegram_chat").write_text("111")
+    lus, envoyes, avant = [], [], (messager.PROPRE, messager.appel, messager.traiter, messager.envoyer)
+
+    class Fin(BaseException):
+        pass
+
+    def appel(jeton, methode, **params):
+        if lus:
+            raise Fin
+        lus.append(1)
+        return [{"update_id": 1, "message": {"chat": {"id": 222}, "text": "/pause 60"}},
+                {"update_id": 2, "message": {"chat": {"id": 111}, "text": "bonjour"}}]
+    messager.PROPRE, messager.appel = d, appel
+    messager.traiter = lambda maj, chat: maj["message"]["text"]
+    messager.envoyer = envoyes.append
+    try:
+        messager.ecouter()
+    except Fin:
+        pass
+    finally:
+        messager.PROPRE, messager.appel, messager.traiter, messager.envoyer = avant
+    assert envoyes == ["bonjour"]  # l'inconnu (chat 222) n'a rien obtenu
 
 
 if __name__ == "__main__":

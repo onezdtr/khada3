@@ -55,6 +55,9 @@ SIGNATURES = {domaine: (rang, genre) for rang, (domaine, genre) in enumerate([
 
 verrou = threading.RLock()  # réentrant : décider d'une proposition puis bloquer le domaine le reprend
 db = sqlite3.connect(BASE, check_same_thread=False)
+# WAL : une écriture coûte 0,1 ms au lieu de 10 sur le serveur (chaque réponse DNS l'attend), et le tableau de bord
+# peut lire pendant qu'on écrit. synchronous=NORMAL : une coupure de courant peut perdre les dernières requêtes notées, jamais abîmer la base.
+db.executescript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
 db.executescript("""
 CREATE TABLE IF NOT EXISTS requetes (t REAL, ip TEXT, domaine TEXT, bloque INTEGER);
 CREATE TABLE IF NOT EXISTS appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL);
@@ -125,25 +128,26 @@ def reponse_vide(paquet, fin, code):
     return paquet[:2] + drapeaux.to_bytes(2, "big") + b"\x00\x01" + b"\x00" * 6 + paquet[12:fin]
 
 
-class Liste:
-    """Fichier de domaines relu dès qu'il change ; un domaine couvre tous ses sous-domaines.
-    Accepte « domaine » ou le format hosts « 0.0.0.0 domaine » des listes publiques."""
+def lire_liste(chemin):
+    """Domaines d'un fichier : « domaine » ou le format hosts « 0.0.0.0 domaine » des listes publiques."""
+    domaines = set()
+    for ligne in chemin.read_text().split("\n"):
+        mots = ligne.split("#")[0].lower().split()
+        if len(mots) == 2 and mots[0] in ("0.0.0.0", "127.0.0.1"):
+            mots = mots[1:]
+        if len(mots) == 1 and "." in mots[0] and mots[0] != "0.0.0.0":
+            domaines.add(mots[0])
+    return domaines
+
+
+class Liste(qui.Charge):
+    """Fichier de domaines relu dès qu'il change ; un domaine couvre tous ses sous-domaines."""
     def __init__(self, chemin):
-        self.chemin, self.date, self.domaines = chemin, None, set()
+        super().__init__(chemin, lire_liste)
 
     def contient(self, domaine):
-        date = self.chemin.stat().st_mtime if self.chemin.exists() else None
-        if date != self.date:
-            lignes = self.chemin.read_text().split("\n") if date else []
-            self.domaines = set()
-            for ligne in lignes:
-                mots = ligne.split("#")[0].lower().split()
-                if len(mots) == 2 and mots[0] in ("0.0.0.0", "127.0.0.1"):
-                    mots = mots[1:]
-                if len(mots) == 1 and "." in mots[0] and mots[0] != "0.0.0.0":
-                    self.domaines.add(mots[0])
-            self.date = date
-        return any(d in self.domaines for d in parents(domaine))
+        domaines = self() or set()
+        return any(d in domaines for d in parents(domaine))
 
 
 liste, autorises, publique, candidats = Liste(LISTE), Liste(AUTORISER), Liste(PUBLIQUE), Liste(CANDIDATS)
@@ -337,11 +341,36 @@ def alerter(texte):
         threading.Thread(target=messager.envoyer, args=(texte,)).start()
 
 
+def identifier(db, ip):
+    """Date de première vue de l'appareil derrière cette IP, ou None s'il est nouveau (il est alors enregistré).
+    Un appareil est suivi par son adresse MAC : si la box a donné cette IP à un autre appareil, l'ancien est mis de
+    côté sous sa MAC (une règle par nom ne doit pas bloquer le nouveau venu) ; quand il revient avec une autre IP,
+    il retrouve son nom, son type et ses habitudes. Sans MAC (Tailscale, le serveur lui-même), l'IP suffit."""
+    mac = mac_de(ip)
+    ligne = db.execute("SELECT vu_le, mac FROM appareils WHERE ip = ?", (ip,)).fetchone()
+    if ligne and not (mac and ligne[1] and mac != ligne[1]):
+        if mac and not ligne[1]:  # MAC encore inconnue à la première requête
+            db.execute("UPDATE appareils SET mac = ? WHERE ip = ?", (mac, ip))
+        return ligne[0]
+    if ligne:  # IP reprise par un autre appareil
+        deplacer(db, ip, ligne[1])
+    ancien = db.execute("SELECT ip, vu_le FROM appareils WHERE mac = ? ORDER BY vu_le LIMIT 1", (mac,)).fetchone() if mac else None
+    if ancien:  # appareil connu, nouvelle IP
+        deplacer(db, ancien[0], ip)
+        return ancien[1]
+    db.execute("INSERT INTO appareils (ip, mac, vu_le, nom) VALUES (?, ?, ?, ?)", (ip, mac, time.time(), nom_tailscale(ip) or None))
+    return None
+
+
+def deplacer(db, de, vers):
+    """Passe le nom, le type deviné et les habitudes d'un appareil d'une adresse à une autre (l'historique reste par IP)."""
+    for table in ("appareils", "devinettes", "habitudes"):
+        db.execute(f"UPDATE OR REPLACE {table} SET ip = ? WHERE ip = ?", (vers, de))
+
+
 def noter(ip, domaine, bloque):
     with verrou:
-        vu_le = db.execute("SELECT vu_le FROM appareils WHERE ip = ?", (ip,)).fetchone()
-        if not vu_le:
-            db.execute("INSERT INTO appareils (ip, mac, vu_le, nom) VALUES (?, ?, ?, ?)", (ip, mac_de(ip), time.time(), nom_tailscale(ip) or None))
+        vu_le = identifier(db, ip)
         db.execute("INSERT INTO requetes VALUES (?, ?, ?, ?)", (time.time(), ip, domaine, int(bloque)))
         deviner(db, ip, domaine)  # avant le nom : l'alerte « nouvel appareil » en profite déjà
         vues = [] if bloque else nouveautes(db, ip, domaine)  # bloqué : l'appareil n'a rien contacté
@@ -350,10 +379,9 @@ def noter(ip, domaine, bloque):
         db.commit()
     if proposition:
         threading.Thread(target=messager.proposer, args=(proposition,)).start()
-    if not vu_le:
-        mac = mac_de(ip)
-        alerter(f"New device on the network: {nom} {mac}\nFirst domain: {domaine}")
-    elif vues and vu_le[0] < time.time() - APPRENTISSAGE:
+    if vu_le is None:
+        alerter(f"New device on the network: {nom} {mac_de(ip)}\nFirst domain: {domaine}")
+    elif vues and vu_le < time.time() - APPRENTISSAGE:
         alerter(f"{nom} contacted {' and '.join(vues)} for the first time\nDomain: {domaine}")
 
 
@@ -569,14 +597,19 @@ def surveiller_reseau():
         time.sleep(300)
 
 
+def question_sante():
+    """Question « A sante.khada3.invalid » : identifiant au hasard, puis l'en-tête de 10 octets (RD, une question)."""
+    return os.urandom(2) + bytes.fromhex("01000001000000000000") + b"".join(
+        bytes([len(m)]) + m.encode() for m in SANTE.split(".")) + b"\x00\x00\x01\x00\x01"
+
+
 def en_forme():
     """Vrai si le serveur DNS répond et que la base n'est pas bloquée."""
-    question = os.urandom(2) + bytes.fromhex("0100000100000000000000") + b"".join(
-        bytes([len(m)]) + m.encode() for m in SANTE.split(".")) + b"\x00\x00\x01\x00\x01"
+    question = question_sante()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(3)
-            s.sendto(question, ("127.0.0.1", PORT))
+            s.sendto(question, ("127.0.0.1" if ECOUTE == "0.0.0.0" else ECOUTE, PORT))  # là où khada3 écoute vraiment
             if s.recv(512)[:2] != question[:2]:
                 return False
         with verrou:
@@ -601,6 +634,8 @@ def veiller():
 
 
 if __name__ == "__main__":
+    import sys
+    sys.modules["khada3"] = sys.modules[__name__]  # web et resume importent « khada3 » : le même module, pas une 2e copie (listes, verrou)
     import web  # ici, pas en haut : web importe ce module
     apprendre(db)
     deviner_depuis_historique(db)

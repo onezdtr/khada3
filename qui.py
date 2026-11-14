@@ -8,6 +8,7 @@ import gzip
 import json
 import socket
 import struct
+import threading
 from pathlib import Path
 
 DOSSIER = Path(__file__).parent / "listes"
@@ -25,19 +26,22 @@ NOMS = {"FingerprintingInvasive": "fingerprinting", "FingerprintingGeneral": "fi
 
 
 class Charge:
-    """Recharge un fichier de données quand il change (mêmes règles que khada3.Liste)."""
+    """Recharge un fichier de données quand il change. La nouvelle valeur est construite à part puis remplace
+    l'ancienne d'un coup : une requête ne voit jamais un fichier à moitié chargé. Un seul fil relit à la fois."""
     def __init__(self, chemin, lire):
-        self.chemin, self.lire, self.date, self.valeur = chemin, lire, None, None
+        self.chemin, self.lire, self.date, self.valeur, self.verrou = chemin, lire, None, None, threading.Lock()
 
     def __call__(self):
         date = self.chemin.stat().st_mtime if self.chemin.exists() else None
         if date != self.date:
-            try:
-                self.valeur = self.lire(self.chemin) if date else None
-            except (OSError, ValueError, EOFError) as e:  # fichier abîmé : on fait comme s'il n'existait pas
-                print("could not read", self.chemin.name, e, flush=True)
-                self.valeur = None
-            self.date = date
+            with self.verrou:
+                if date != self.date:  # un autre fil vient peut-être de le relire pendant qu'on attendait
+                    try:
+                        valeur = self.lire(self.chemin) if date else None
+                    except (OSError, ValueError, EOFError) as e:  # fichier abîmé : on fait comme s'il n'existait pas
+                        print("could not read", self.chemin.name, e, flush=True)
+                        valeur = None
+                    self.valeur, self.date = valeur, date
         return self.valeur
 
 
