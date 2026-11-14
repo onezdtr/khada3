@@ -187,7 +187,7 @@ async function rafraichir() {
   let r;
   try { r = await fetch("/api/etat" + (choisi ? "?ip=" + encodeURIComponent(choisi) : ""), { headers: entetes }); }
   catch { return signal(false, "khada3 is not responding"); }
-  if (!r.ok) return signal(false, "access denied: open the URL printed at startup, with its token");
+  if (!r.ok) return signal(false, "access denied: add ?jeton= and the token from ~/.config/khada3/jeton to the URL");
   const etat = await r.json();
   enPause = etat.pause > 0;
   const bouton = document.getElementById("pause");

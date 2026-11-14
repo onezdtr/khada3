@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import time
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -205,7 +206,7 @@ class Gestion(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if not self.autorise():
-            return self.repondre(403, b"Missing token: open the URL printed when khada3 starts.", "text/plain")
+            return self.repondre(403, b"Missing token: add ?jeton=<the token in ~/.config/khada3/jeton> to the URL.", "text/plain")
         if url.path == "/":
             return self.repondre(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         if url.path == "/api/etat":
@@ -242,5 +243,7 @@ class Gestion(BaseHTTPRequestHandler):
 
 
 def servir(ecoute):
-    print(f"dashboard: http://{'127.0.0.1' if ecoute == '0.0.0.0' else ecoute}:{PORT_WEB}/?jeton={jeton()}", flush=True)
+    url = f"http://{'127.0.0.1' if ecoute == '0.0.0.0' else ecoute}:{PORT_WEB}/?jeton="
+    # sous systemd la sortie finit dans le journal, gardé longtemps : le jeton n'y est pas écrit
+    print(f"dashboard: {url}{jeton() if sys.stdout.isatty() else '<token in ' + str(FICHIER_JETON) + '>'}", flush=True)
     ThreadingHTTPServer((ecoute, PORT_WEB), Gestion).serve_forever()

@@ -109,7 +109,7 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 
 ## Privacy and security
 
-- The DNS log is a browsing history. The dashboard refuses every request without the token stored in `~/.config/khada3/jeton` (created on first run).
+- The DNS log is a browsing history. The dashboard refuses every request without the token stored in `~/.config/khada3/jeton` (created on first run). It is printed only when khada3 runs in a terminal, never into the systemd journal.
 - Domain names come from the network and are never inserted as HTML in the page.
 - The data stays on the machine, except the last 24 hours of domains sent to Gemini when the agent answers or writes the report, and the messages exchanged with your own Telegram bot.
 - The Telegram bot only listens to the chat it was paired with.
