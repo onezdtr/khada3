@@ -231,7 +231,8 @@ def base_test():
                      "CREATE TABLE habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));"
                      "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);"
                      "CREATE TABLE prives (cle TEXT PRIMARY KEY);"
-                     "CREATE TABLE hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);")
+                     "CREATE TABLE hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);"
+                     "CREATE TABLE IF NOT EXISTS propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente');")
     return db
 
 
@@ -402,7 +403,6 @@ def test_regles_par_appareil():
 
 def test_contournement_propose_une_seule_fois():
     db = base_test()
-    db.execute("CREATE TABLE propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente')")
     db.execute("INSERT INTO appareils VALUES ('192.168.1.5', '', 0, 'iphone')")
     p = khada3.contournement(db, "192.168.1.5", "mozilla.cloudflare-dns.com")
     assert p["domaine"] == "mozilla.cloudflare-dns.com" and p["raison"].startswith("iphone tried Cloudflare encrypted DNS")
@@ -466,6 +466,17 @@ def test_deviner_le_type_d_appareil():
     assert khada3.nom_appareil(db, "10.0.0.4") == "salon"  # le nom donné passe avant
     assert db.execute("SELECT genre FROM devinettes WHERE ip = '10.0.0.6'").fetchone() == ("Linux computer",)
     assert db.execute("SELECT COUNT(*) FROM devinettes").fetchone()[0] == 5
+
+
+def test_suggestions_expirent_apres_une_semaine():
+    db = base_test()
+    maintenant = 1_800_000_000
+    db.executemany("INSERT INTO propositions (t, domaine, raison, etat) VALUES (?, ?, '', ?)",
+                   [(maintenant - 8 * 86400, "vieux.example", "attente"), (maintenant - 86400, "recent.example", "attente"),
+                    (maintenant - 30 * 86400, "accepte.example", "acceptee")])
+    assert khada3.expirer(db, maintenant) == 1
+    assert dict(db.execute("SELECT domaine, etat FROM propositions")) == {
+        "vieux.example": "expiree", "recent.example": "attente", "accepte.example": "acceptee"}
 
 
 def test_hors_khada3():

@@ -76,6 +76,7 @@ if "nom" not in [c[1] for c in db.execute("PRAGMA table_info(appareils)")]:
     db.execute("ALTER TABLE appareils ADD COLUMN nom TEXT")  # bases créées avant les noms d'appareils
 GARDER = 30 * 86400  # au-delà, les requêtes sont effacées
 APPRENTISSAGE = 86400  # un appareil neuf contacte tout : pas d'alerte « première fois » pendant son premier jour
+EXPIRATION = 7 * 86400  # une suggestion sans réponse depuis une semaine sort de la liste (et n'est pas reproposée)
 MAX_ALERTES = 10  # par heure : une appli neuve qui contacte 30 pisteurs ne doit pas inonder Telegram
 alertes = []  # dates des dernières alertes envoyées
 cache, verrou_cache = {}, threading.Lock()
@@ -575,11 +576,16 @@ def apprendre(db):
     db.commit()
 
 
+def expirer(db, maintenant):
+    return db.execute("UPDATE propositions SET etat = 'expiree' WHERE etat = 'attente' AND t < ?", (maintenant - EXPIRATION,)).rowcount
+
+
 def purger():
-    """Chaque heure : efface le vieil historique et cherche les pics de trafic nocturnes."""
+    """Chaque heure : efface le vieil historique, fait expirer les vieilles suggestions et cherche les pics de trafic nocturnes."""
     while True:
         with verrou:
             db.execute("DELETE FROM requetes WHERE t < ?", (time.time() - GARDER,))
+            expirer(db, time.time())
             db.commit()
             pics = pics_nocturnes(db, time.time())
         for texte in pics:
