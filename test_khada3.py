@@ -499,6 +499,19 @@ def test_appareil_allume_mais_muet_signale_une_fois():
     assert "aa:aa" not in khada3.silencieux
 
 
+def test_carte_de_la_semaine_sans_adresse_ip():
+    import resume
+    db = base_test()
+    t = 1_800_000_000
+    db.executemany("INSERT INTO appareils VALUES (?, '', 0, ?)", [("10.0.0.2", "tel"), ("10.0.0.3", None)])
+    db.executemany("INSERT INTO requetes VALUES (?, ?, ?, ?)", [(t - 3600, "10.0.0.2", "a.fr", 0), (t - 3600, "10.0.0.2", "pub.fr", 1),
+                                                                (t - 3600, "10.0.0.3", "a.fr", 0), (t - 30 * 86400, "10.0.0.3", "vieux.fr", 0)])
+    svg = resume.carte(t, db)
+    assert ">3<" in svg and ">1<" in svg and "blocked · 33 %" in svg and ">tel<" in svg
+    assert "10.0.0." not in svg  # image faite pour être partagée
+    assert resume.carte(t + 60 * 86400, db) is None
+
+
 def test_hors_khada3():
     import sqlite3
     db = sqlite3.connect(":memory:")

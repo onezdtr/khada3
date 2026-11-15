@@ -8,7 +8,9 @@ Usage : python3 resume.py           -> envoie le rapport et les propositions sur
 """
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.request
@@ -125,9 +127,86 @@ def semaine(maintenant=None, db=None):
     return "\n".join(lignes)
 
 
+PISTAGE = {"advertising", "analytics", "social", "fingerprinting", "email tracking"}
+
+
+def echapper(texte):
+    return str(texte).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def carte(maintenant=None, db=None):
+    """La semaine en une image à partager (SVG 1080x1350) : chiffres, appareils, qui piste, où partent les requêtes."""
+    maintenant, db = maintenant or time.time(), db or sqlite3.connect(BASE)
+    debut = maintenant - 7 * 86400
+    total, bloques = db.execute("SELECT COUNT(*), COALESCE(SUM(bloque), 0) FROM requetes WHERE t >= ?", (debut,)).fetchone()
+    if not total:
+        return None
+    appareils = db.execute("""SELECT ip, COUNT(*), SUM(bloque) FROM requetes WHERE t >= ? GROUP BY ip
+                              ORDER BY COUNT(*) DESC LIMIT 6""", (debut,)).fetchall()
+    pisteurs, pays, ips = {}, {}, dict(db.execute("SELECT domaine, ip FROM domaines"))
+    for domaine, n, n_bloques in db.execute("SELECT domaine, COUNT(*), SUM(bloque) FROM requetes WHERE t >= ? GROUP BY domaine", (debut,)):
+        nom, categorie = qui.entreprise(domaine)
+        if categorie in PISTAGE:
+            pisteurs[nom] = pisteurs.get(nom, 0) + n
+        if n > n_bloques and (code := qui.pays(ips.get(domaine))):  # une requête bloquée n'est partie nulle part
+            pays[code] = pays.get(code, 0) + n - n_bloques
+    pisteurs = sorted(pisteurs.items(), key=lambda x: -x[1])[:5]
+    partis = sum(pays.values()) or 1
+    pays = sorted(pays.items(), key=lambda x: -x[1])[:5]
+
+    fond, texte, gris, trait, accent = "#0b0b0c", "#ededed", "#8a8f98", "#26282d", "#5e6ad2"
+    du, au = time.strftime("%d %b", time.localtime(debut)), time.strftime("%d %b %Y", time.localtime(maintenant))
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" font-family="Noto Sans, sans-serif">',
+         f'<rect width="1080" height="1350" fill="{fond}"/>',
+         f'<text x="72" y="120" fill="{texte}" font-size="44" font-weight="700">khada3</text>',
+         f'<text x="72" y="166" fill="{gris}" font-size="28">Your home network, {du} to {au}</text>']
+    for i, (valeur, legende) in enumerate([(f"{total:,}", "lookups"), (f"{bloques:,}", f"blocked · {bloques * 100 // total} %"),
+                                           (str(len(appareils)), "devices")]):
+        x = 72 + i * 320
+        s += [f'<text x="{x}" y="290" fill="{accent if i == 1 else texte}" font-size="72" font-weight="700">{valeur}</text>',
+              f'<text x="{x}" y="334" fill="{gris}" font-size="26">{legende}</text>']
+    s.append(f'<text x="72" y="440" fill="{gris}" font-size="24" letter-spacing="2">DEVICES</text>')
+    plus = appareils[0][1]
+    for i, (ip, n, nb) in enumerate(appareils):
+        y = 490 + i * 62
+        largeur = max(4, 480 * n / plus)
+        nom = re.sub(r"\s*\d+\.\d+\.\d+\.\d+$", "", nom_appareil(db, ip))  # pas d'adresse IP sur une image faite pour être partagée
+        s += [f'<text x="72" y="{y + 22}" fill="{texte}" font-size="26">{echapper(nom)[:22]}</text>',
+              f'<rect x="420" y="{y}" width="{largeur:.0f}" height="28" rx="6" fill="{trait}"/>',
+              f'<rect x="420" y="{y}" width="{max(2, largeur * (nb or 0) / n):.0f}" height="28" rx="6" fill="{accent}"/>',
+              f'<text x="{430 + largeur:.0f}" y="{y + 22}" fill="{gris}" font-size="22">{n:,}</text>']
+    for colonne, (titre, lignes) in enumerate([("WHO TRACKED YOU", [(nom, f"{n:,}") for nom, n in pisteurs]),
+                                               ("WHERE IT WENT", [(code, f"{n * 100 // partis} %") for code, n in pays])]):
+        x = 72 + colonne * 500
+        s.append(f'<text x="{x}" y="900" fill="{gris}" font-size="24" letter-spacing="2">{titre}</text>')
+        for i, (gauche, droite) in enumerate(lignes):
+            y = 960 + i * 58
+            s += [f'<text x="{x}" y="{y}" fill="{texte}" font-size="30">{echapper(gauche)[:18]}</text>',
+                  f'<text x="{x + 420}" y="{y}" fill="{gris}" font-size="28" text-anchor="end">{droite}</text>']
+    s += [f'<line x1="72" y1="1250" x2="1008" y2="1250" stroke="{trait}" stroke-width="2"/>',
+          f'<text x="72" y="1296" fill="{gris}" font-size="22">Self-hosted DNS + AI agent · github.com/onezdtr/khada3</text>', "</svg>"]
+    return "\n".join(s)
+
+
+def png(svg):
+    """PNG de la carte avec rsvg-convert (paquet librsvg2-tools) ; None s'il n'est pas installé."""
+    try:
+        return subprocess.run(["rsvg-convert", "-f", "png"], input=svg.encode(), capture_output=True, check=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 if __name__ == "__main__" and "--semaine" in sys.argv:
-    texte = semaine()
-    print(texte) if "--ecran" in sys.argv else messager.envoyer(texte)
+    texte, image = semaine(), carte()
+    if "--ecran" in sys.argv:
+        print(texte)
+        if image and (contenu := png(image)):
+            Path("semaine.png").write_bytes(contenu)
+            print("\nimage: semaine.png")
+    else:
+        messager.envoyer(texte)
+        if image and (contenu := png(image)):
+            messager.photo(contenu, "Your week")
 elif __name__ == "__main__":
     texte, propositions = rapport()
     if "--ecran" in sys.argv:

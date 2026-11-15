@@ -6,6 +6,7 @@ Sans ce bot, les messages partent par le bot du chasseur d'alternance, sans bout
 on ne peut pas écouter un bot qu'un autre programme écoute déjà.
 """
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -44,6 +45,24 @@ def envoyer(texte, boutons=None):
         appel(jeton, "sendMessage", **params)
     except (OSError, ValueError, KeyError) as e:
         print("telegram message not sent:", e, flush=True)
+
+
+def photo(contenu, legende=""):
+    """Envoie une image PNG ; même règle qu'envoyer : un envoi raté ne doit rien casser."""
+    jeton, chat, _ = bot()
+    if not (jeton and chat):
+        return
+    limite = "khada3" + os.urandom(8).hex()
+    champs = b"".join(f'--{limite}\r\nContent-Disposition: form-data; name="{nom}"\r\n\r\n{valeur}\r\n'.encode()
+                      for nom, valeur in (("chat_id", chat), ("caption", legende)))
+    corps = (champs + f'--{limite}\r\nContent-Disposition: form-data; name="photo"; filename="week.png"\r\n'
+             f"Content-Type: image/png\r\n\r\n".encode() + contenu + f"\r\n--{limite}--\r\n".encode())
+    req = urllib.request.Request(f"https://api.telegram.org/bot{jeton}/sendPhoto", corps,
+                                 {"Content-Type": f"multipart/form-data; boundary={limite}"})
+    try:
+        urllib.request.urlopen(req, timeout=60).read()
+    except (OSError, ValueError) as e:
+        print("telegram photo not sent:", e, flush=True)
 
 
 def proposer(p):

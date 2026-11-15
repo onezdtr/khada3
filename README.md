@@ -26,7 +26,7 @@
 - **Spots devices that skip khada3 entirely.** A device on the Wi-Fi that never asks khada3 anything is using another DNS (usually the box's). Every 5 minutes khada3 reads the server's ARP table (no scan) and lists them on the dashboard, with one Telegram alert for each new one, so you know which devices to point at it.
 - **Notices a device that quietly stops using it.** A device that usually talks a lot, is still on the network (it answers a ping), but has asked khada3 nothing for 2 hours has probably switched to its own encrypted DNS or iCloud Private Relay: one Telegram alert, until it comes back.
 - **Private mode for family and guests.** Mark a device private (the ○ button next to it, even before it first uses khada3): it is still filtered, but khada3 only keeps how many requests it made and how many were blocked. No domain, no habits, no suggestions, nothing in the AI report. Making a device private erases what was already stored.
-- **Weekly report** on Sunday at 20:00, no AI needed: requests per device against the week before, devices that went silent for over a day, most blocked domains.
+- **Weekly report** on Sunday at 20:00, no AI needed: requests per device against the week before, devices that went silent for over a day, most blocked domains. It comes with a shareable card (lookups, blocked, devices, the companies that tracked you most, the countries your lookups went to; no IP address on it). The card needs `rsvg-convert` (`librsvg2-tools` on Fedora, `librsvg2-bin` on Debian); without it, you get the text only.
 - A 30-day history, purged automatically.
 
 ## How it works
