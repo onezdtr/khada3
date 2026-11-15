@@ -229,7 +229,9 @@ def base_test():
                      "CREATE TABLE appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL, nom TEXT);"
                      "CREATE TABLE domaines (domaine TEXT PRIMARY KEY, ip TEXT);"
                      "CREATE TABLE habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));"
-                     "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);")
+                     "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);"
+                     "CREATE TABLE prives (cle TEXT PRIMARY KEY);"
+                     "CREATE TABLE hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);")
     return db
 
 
@@ -481,13 +483,17 @@ def test_hors_khada3():
     assert db.execute("SELECT ip, vu_le FROM hors_khada3").fetchall() == [("192.168.1.177", 2)]
     db.execute("INSERT INTO appareils VALUES ('192.168.1.177', 'aa:bb:cc:00:00:03', 3, NULL)")
     assert khada3.hors_khada3(db, arp, "192.168.1.1", 3) == [] and not db.execute("SELECT * FROM hors_khada3").fetchall()
-    # une box Android qui passe par khada3 à travers Tailscale : son IP locale ne doit plus être signalée
-    etat = {"Peer": {"a": {"CurAddr": "192.168.1.180:43661"}, "b": {"CurAddr": ""}, "c": {}}}
-    assert khada3.lan_tailscale(etat) == {"192.168.1.180"}
+    # une box Android qui passe par khada3 à travers Tailscale : liée à sa MAC locale, elle n'est plus signalée,
+    # même quand Tailscale ne donne plus son adresse locale (connexion au repos)
+    etat = {"Peer": {"a": {"CurAddr": "192.168.1.180:43661", "TailscaleIPs": ["100.64.0.9"]}, "b": {"CurAddr": ""}, "c": {}}}
+    assert khada3.lan_tailscale(etat) == {"192.168.1.180": "100.64.0.9"}
     arp2 = arp + "192.168.1.180    0x1         0x2         aa:bb:cc:00:00:04     *        wlp3s0\n"
+    db.execute("INSERT INTO appareils VALUES ('100.64.0.9', '', 0, 'box')")
     db.execute("INSERT INTO hors_khada3 VALUES ('aa:bb:cc:00:00:04', '192.168.1.180', 0)")  # signalée avant Tailscale
-    assert khada3.hors_khada3(db, arp2, "192.168.1.1", 4, khada3.lan_tailscale(etat)) == []
-    assert not db.execute("SELECT * FROM hors_khada3").fetchall()
+    khada3.lier_tailscale(db, arp2, khada3.lan_tailscale(etat))
+    assert khada3.hors_khada3(db, arp2, "192.168.1.1", 4) == [] and not db.execute("SELECT * FROM hors_khada3").fetchall()
+    khada3.lier_tailscale(db, arp2, khada3.lan_tailscale({}))  # au repos : rien ne change
+    assert khada3.hors_khada3(db, arp2, "192.168.1.1", 5) == []
 
 
 def test_appareil_suivi_par_sa_mac():
@@ -562,6 +568,53 @@ def test_bot_ignore_les_inconnus():
     finally:
         messager.PROPRE, messager.appel, messager.traiter, messager.envoyer = avant
     assert envoyes == ["bonjour"]  # l'inconnu (chat 222) n'a rien obtenu
+
+
+def test_mode_prive():
+    import web
+    macs, avant = {"192.168.1.30": "aa:aa:aa:aa:aa:30"}, (khada3.mac_de, khada3.db, khada3.alerter, web.BASE)
+    khada3.mac_de = lambda ip: macs.get(ip, "")
+    alertes = []
+    khada3.alerter = alertes.append
+    with tempfile.TemporaryDirectory() as d:
+        base = os.path.join(d, "t.db")
+        import sqlite3
+        f = sqlite3.connect(base)
+        f.executescript("CREATE TABLE requetes (t REAL, ip TEXT, domaine TEXT, bloque INTEGER);"
+                        "CREATE TABLE appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL, nom TEXT);"
+                        "CREATE TABLE habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));"
+                        "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);"
+                        "CREATE TABLE prives (cle TEXT PRIMARY KEY);"
+                        "CREATE TABLE hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);"
+                        "INSERT INTO appareils VALUES ('192.168.1.30', 'aa:aa:aa:aa:aa:30', 0, 'tel de maman');"
+                        "INSERT INTO requetes VALUES (1, '192.168.1.30', 'medecin.fr', 0);"
+                        "INSERT INTO habitudes VALUES ('192.168.1.30', 'pays', 'FR');"
+                        "INSERT INTO hors_khada3 VALUES ('bb:bb:bb:bb:bb:31', '192.168.1.31', 0);")
+        f.commit()
+        web.BASE = base
+        try:
+            assert web.rendre_prive("AA:AA:AA:AA:AA:30", True) is True
+            assert f.execute("SELECT domaine FROM requetes").fetchall() == [("(private)",)]  # l'historique passé est effacé
+            assert not f.execute("SELECT * FROM habitudes").fetchall()
+            assert web.rendre_prive("bb:bb:bb:bb:bb:31", True)  # marqué d'avance, avant sa 1re requête
+            try:
+                web.rendre_prive("cc:cc:cc:cc:cc:cc", True)
+                raise AssertionError("appareil inconnu accepté")
+            except ValueError:
+                pass
+            # côté DNS : bloqué comme les autres, mais seul « (private) » est noté, et l'alerte ne dit pas le domaine
+            khada3.db = f
+            f.execute("CREATE TABLE IF NOT EXISTS domaines (domaine TEXT PRIMARY KEY, ip TEXT)")
+            macs["192.168.1.31"] = "bb:bb:bb:bb:bb:31"
+            assert khada3.est_prive(f, "192.168.1.31") and not khada3.est_prive(f, "192.168.1.40")
+            khada3.noter("192.168.1.31", "psy-en-ligne.fr", False, prive=True)
+            assert f.execute("SELECT domaine FROM requetes WHERE ip = '192.168.1.31'").fetchall() == [("(private)",)]
+            assert alertes and "psy-en-ligne.fr" not in alertes[-1]
+            assert not f.execute("SELECT * FROM habitudes WHERE ip = '192.168.1.31'").fetchall()
+            assert web.rendre_prive("aa:aa:aa:aa:aa:30", False) is False
+            assert not khada3.est_prive(f, "192.168.1.30")
+        finally:
+            khada3.mac_de, khada3.db, khada3.alerter, web.BASE = avant
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import messager
 import qui
 import resume
-from khada3 import AUTORISER, BASE, DOMAINE, LISTE, PAUSE, REGLES, est_bloque, fabricant, lire_regle, pause_restante, verrou
+from khada3 import AUTORISER, BASE, DOMAINE, LISTE, PAUSE, PRIVE, REGLES, est_bloque, fabricant, lire_regle, pause_restante, verrou
 
 PORT_WEB = int(os.environ.get("KHADA3_PORT_WEB", "8053"))
 FICHIER_JETON = Path.home() / ".config/khada3/jeton"
@@ -33,6 +33,7 @@ def jeton():
 
 def etat(ip=None):
     db = sqlite3.connect(BASE)
+    prives = {c for (c,) in db.execute("SELECT cle FROM prives")}
     appareils = [dict(zip(("ip", "mac", "nom", "type", "requetes", "bloquees", "dernier"), l)) for l in db.execute(
         """SELECT a.ip, a.mac, a.nom, d.genre, COUNT(r.t), COALESCE(SUM(r.bloque), 0), MAX(r.t) FROM appareils a
            LEFT JOIN devinettes d ON d.ip = a.ip
@@ -40,6 +41,7 @@ def etat(ip=None):
         (time.time() - 86400,))]
     for a in appareils:
         a["fabricant"] = fabricant(a["mac"] or "")
+        a["prive"] = bool({a["ip"], a["mac"]} & prives)
     filtre, params = ("AND ip = ?", (ip,)) if ip else ("", ())
     domaines = [{"domaine": d, "requetes": n, "bloque": est_bloque(d)} for d, n in db.execute(  # état actuel, pas l'historique
         f"""SELECT domaine, COUNT(*) FROM requetes WHERE t >= ? {filtre}
@@ -58,7 +60,7 @@ def etat(ip=None):
     pays = sorted(({"pays": p, "requetes": n} for p, n in par_pays.items()), key=lambda x: -x["requetes"])[:12]
     propositions = [dict(zip(("id", "domaine", "raison"), l)) for l in db.execute(
         "SELECT id, domaine, raison FROM propositions WHERE etat = 'attente' ORDER BY t DESC")]
-    hors = [{"ip": i, "mac": m, "fabricant": fabricant(m), "vu_le": t} for m, i, t in db.execute(
+    hors = [{"ip": i, "mac": m, "fabricant": fabricant(m), "vu_le": t, "prive": m in prives} for m, i, t in db.execute(
         "SELECT mac, ip, vu_le FROM hors_khada3 WHERE vu_le >= ? ORDER BY vu_le DESC", (time.time() - 86400,))]
     return {"appareils": appareils, "hors": hors, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
             "heures": heures(db, filtre, params), "pause": round(pause_restante()), "regles": regles()}
@@ -122,6 +124,25 @@ def nommer(ip, nom):
         if not db.execute("UPDATE appareils SET nom = ? WHERE ip = ?", (nom, ip)).rowcount:
             raise ValueError("appareil inconnu")
     return nom
+
+
+def rendre_prive(cle, prive):
+    """Appareil privé (cle : sa MAC, ou son IP s'il n'en a pas) : bloqué comme les autres, mais khada3 ne garde plus ce
+    qu'il visite. Le rendre privé efface aussi ce qui était déjà noté (domaines remplacés par « (private) », habitudes)."""
+    cle = str(cle).strip().lower()
+    with verrou, sqlite3.connect(BASE) as db:
+        if not db.execute("""SELECT 1 FROM appareils WHERE ip = ?1 OR mac = ?1
+                             UNION SELECT 1 FROM hors_khada3 WHERE mac = ?1""", (cle,)).fetchone():
+            raise ValueError("unknown device")
+        if not prive:
+            db.execute("DELETE FROM prives WHERE cle = ?", (cle,))
+            return False
+        db.execute("INSERT OR IGNORE INTO prives VALUES (?)", (cle,))
+        for (ip,) in db.execute("SELECT ip FROM appareils WHERE ip = ?1 OR mac = ?1", (cle,)).fetchall():
+            db.execute("UPDATE requetes SET domaine = ? WHERE ip = ?", (PRIVE, ip))
+            for table in ("habitudes", "devinettes"):
+                db.execute(f"DELETE FROM {table} WHERE ip = ?", (ip,))
+    return True
 
 
 def regles():
@@ -228,6 +249,8 @@ class Gestion(BaseHTTPRequestHandler):
                 return self.repondre(200, {"debloque": debloquer(str(corps.get("domaine", "")))})
             if self.path == "/api/nommer":
                 return self.repondre(200, {"nom": nommer(str(corps.get("ip", "")), str(corps.get("nom", "")))})
+            if self.path == "/api/prive":
+                return self.repondre(200, {"prive": rendre_prive(corps.get("cle", ""), bool(corps.get("prive")))})
             if self.path == "/api/regle":
                 if corps.get("retirer"):
                     return self.repondre(200, {"retiree": retirer_regle(corps.get("ligne", ""))})

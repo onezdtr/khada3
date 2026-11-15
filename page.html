@@ -37,6 +37,7 @@
   .renommer { background: none; border: 1px solid var(--trait); border-left: 0; border-radius: 0 4px 4px 0; color: var(--doux); font: inherit;
     font-size: 12px; padding: 5px 8px; cursor: pointer; }
   .renommer:hover { color: var(--neon); }
+  .renommer.prive { color: var(--neon); }
   .appareil[aria-pressed="true"] { border-color: var(--neon); color: var(--neon); box-shadow: 0 0 10px rgb(57 255 156 / .2) inset; }
   .ligne { display: flex; align-items: center; gap: 12px; padding: 5px 0; border-bottom: 1px solid rgb(17 40 59 / .7); font-size: 13px; }
   .ligne:last-child { border-bottom: 0; }
@@ -216,13 +217,14 @@ async function rafraichir() {
     ...[...appareils].sort((x, y) => ordreIp(x.ip).localeCompare(ordreIp(y.ip))).map((a) => el("li", { className: "groupe" },
       el("button", { className: "appareil", ariaPressed: String(choisi === a.ip), onclick: () => choisir(a.ip), title: `${a.ip} ${a.mac} ${a.fabricant}${a.type ? " · probably " + a.type : ""}` },
         nomDe(a), el("span", { textContent: a.requetes })),
-      el("button", { className: "renommer", ariaLabel: `Rename ${nomDe(a)}`, title: "Rename", textContent: "✎", onclick: () => renommer(a) }))));
+      el("button", { className: "renommer", ariaLabel: `Rename ${nomDe(a)}`, title: "Rename", textContent: "✎", onclick: () => renommer(a) }),
+      boutonPrive(a.mac || a.ip, a.prive, nomDe(a)))));
 
   document.getElementById("domaines").replaceChildren(...etat.domaines.map((d) => el("li", { className: "ligne" + (d.bloque ? " bloque" : "") },
     el("span", { className: "n", textContent: d.requetes }),
     el("span", { className: "d" }, d.domaine, d.entreprise ? el("small", { className: "qui", textContent: `${d.entreprise} · ${d.categorie}` }) : ""),
     d.pays ? el("span", { className: "pays", textContent: d.pays, title: nomPays(d.pays) }) : "",
-    d.bloque ? el("button", { className: "bloquer", textContent: "unblock", onclick: () => debloquer(d.domaine) })
+    d.domaine === "(private)" ? "" : d.bloque ? el("button", { className: "bloquer", textContent: "unblock", onclick: () => debloquer(d.domaine) })
              : el("button", { className: "bloquer", textContent: "block", onclick: () => bloquer(d.domaine) }))));
 
   document.getElementById("bloc-propositions").hidden = !etat.propositions.length;
@@ -233,7 +235,8 @@ async function rafraichir() {
 
   document.getElementById("bloc-hors").hidden = !etat.hors.length;
   document.getElementById("hors").replaceChildren(...etat.hors.map((h) => el("li", { className: "ligne" },
-    el("span", { className: "d" }, h.ip, el("small", { className: "qui", textContent: `${h.fabricant || "device"} · ${h.mac}` })))));
+    el("span", { className: "d" }, h.ip, el("small", { className: "qui", textContent: `${h.fabricant || "device"} · ${h.mac}` })),
+    boutonPrive(h.mac, h.prive, h.ip))));
 
   document.getElementById("regles").replaceChildren(...etat.regles.map((r) => el("li", { className: "ligne" },
     el("span", { className: "d", textContent: r }),
@@ -307,6 +310,17 @@ async function renommer(a) {
   if (nom === null) return;
   await fetch("/api/nommer", { method: "POST", headers: entetes, body: JSON.stringify({ ip: a.ip, nom }) });
   rafraichir();
+}
+
+// privé : khada3 bloque toujours, mais ne garde plus les sites visités (pour les appareils de la famille, des invités)
+function boutonPrive(cle, prive, nom) {
+  return el("button", { className: "renommer" + (prive ? " prive" : ""), ariaPressed: String(prive),
+    ariaLabel: prive ? `${nom} is private: history off` : `Make ${nom} private`,
+    title: prive ? "Private: blocking on, history off. Click to keep history again." : "Make private: keep blocking, stop keeping the sites it visits (erases its history)",
+    textContent: prive ? "private" : "○", onclick: async () => {
+      await fetch("/api/prive", { method: "POST", headers: entetes, body: JSON.stringify({ cle, prive: !prive }) });
+      rafraichir();
+    } });
 }
 
 function choisir(ip) { choisi = ip; rafraichir(); }

@@ -33,6 +33,7 @@ AMONTS = [(ip.strip(), 53) for ip in os.environ.get("KHADA3_AMONT", "1.1.1.1,9.9
 REGLES = ICI / "regles.txt"  # blocages pour un seul appareil, éventuellement à certaines heures
 PAUSE = ICI / "pause"  # date de fin d'une pause du blocage ; un fichier, car web.py importe une seconde copie de ce module
 SANTE = "sante.khada3.invalid"  # question que khada3 se pose à lui-même : répondue sur place, jamais notée
+PRIVE = "(private)"  # noté à la place du domaine pour un appareil privé : il est filtré, pas surveillé
 
 # DNS chiffré et Relais privé iCloud : l'appareil qui les utilise ne passe plus par khada3 (un domaine couvre ses sous-domaines)
 CONTOURNEMENTS = {"dns.google": "Google encrypted DNS", "cloudflare-dns.com": "Cloudflare encrypted DNS",
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS propositions (id INTEGER PRIMARY KEY, t REAL, domaine
 CREATE TABLE IF NOT EXISTS habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY KEY (ip, genre, valeur));
 CREATE TABLE IF NOT EXISTS devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);
 CREATE TABLE IF NOT EXISTS hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);
+CREATE TABLE IF NOT EXISTS prives (cle TEXT PRIMARY KEY);  -- MAC (ou IP sans MAC) des appareils privés
 """)
 if "nom" not in [c[1] for c in db.execute("PRAGMA table_info(appareils)")]:
     db.execute("ALTER TABLE appareils ADD COLUMN nom TEXT")  # bases créées avant les noms d'appareils
@@ -293,9 +295,19 @@ def etat_tailscale():
 
 
 def lan_tailscale(etat):
-    """IP locales des appareils Tailscale joints en direct (CurAddr « 192.168.1.176:43661 ») : leur DNS passe
-    par khada3 dans le tunnel, même si leur IP locale ne lui demande jamais rien."""
-    return {(p.get("CurAddr") or "").rpartition(":")[0] for p in (etat.get("Peer") or {}).values()} - {""}
+    """{IP locale: IP Tailscale} des appareils Tailscale joints en direct (CurAddr « 192.168.1.176:43661 »).
+    Tailscale ne la donne que pendant que la connexion est active."""
+    return {p["CurAddr"].rpartition(":")[0]: (p.get("TailscaleIPs") or [""])[0]
+            for p in (etat.get("Peer") or {}).values() if p.get("CurAddr")}
+
+
+def lier_tailscale(db, arp, liens):
+    """Donne à un appareil Tailscale la MAC de son IP locale (liens : voir lan_tailscale). Son DNS passe par khada3
+    dans le tunnel : avec sa MAC, il n'est plus pris pour un appareil qui contourne khada3, même au repos."""
+    macs = {c[0]: c[3] for c in (ligne.split() for ligne in arp.splitlines()[1:]) if len(c) >= 4 and c[2] == "0x2"}
+    for lan, ts in liens.items():
+        if macs.get(lan):
+            db.execute("UPDATE appareils SET mac = ? WHERE ip = ? AND COALESCE(mac, '') = ''", (macs[lan], ts))
 
 
 def nom_tailscale(ip):
@@ -365,7 +377,8 @@ def identifier(db, ip):
         return ligne[0]
     if ligne:  # IP reprise par un autre appareil
         deplacer(db, ip, ligne[1])
-    ancien = db.execute("SELECT ip, vu_le FROM appareils WHERE mac = ? ORDER BY vu_le LIMIT 1", (mac,)).fetchone() if mac else None
+    ancien = db.execute("""SELECT ip, vu_le FROM appareils WHERE mac = ? AND ip NOT LIKE '100.%'
+                           ORDER BY vu_le LIMIT 1""", (mac,)).fetchone() if mac else None  # un appareil Tailscale garde son IP Tailscale
     if ancien:  # appareil connu, nouvelle IP
         deplacer(db, ancien[0], ip)
         return ancien[1]
@@ -379,19 +392,26 @@ def deplacer(db, de, vers):
         db.execute(f"UPDATE OR REPLACE {table} SET ip = ? WHERE ip = ?", (vers, de))
 
 
-def noter(ip, domaine, bloque):
+def est_prive(db, ip):
+    """Appareil privé (par sa MAC, ou son IP sans MAC) : bloqué comme les autres, mais rien de ce qu'il visite n'est gardé."""
+    return bool(db.execute("SELECT 1 FROM prives WHERE cle IN (?, ?)", (ip, mac_de(ip) or ip)).fetchone())
+
+
+def noter(ip, domaine, bloque, prive=False):
+    """prive : seulement le nombre de requêtes et de blocages ; ni domaine, ni type deviné, ni habitudes, ni proposition."""
     with verrou:
         vu_le = identifier(db, ip)
-        db.execute("INSERT INTO requetes VALUES (?, ?, ?, ?)", (time.time(), ip, domaine, int(bloque)))
-        deviner(db, ip, domaine)  # avant le nom : l'alerte « nouvel appareil » en profite déjà
-        vues = [] if bloque else nouveautes(db, ip, domaine)  # bloqué : l'appareil n'a rien contacté
-        proposition = None if bloque else contournement(db, ip, domaine)
+        db.execute("INSERT INTO requetes VALUES (?, ?, ?, ?)", (time.time(), ip, PRIVE if prive else domaine, int(bloque)))
+        if not prive:
+            deviner(db, ip, domaine)  # avant le nom : l'alerte « nouvel appareil » en profite déjà
+        vues = [] if bloque or prive else nouveautes(db, ip, domaine)  # bloqué : l'appareil n'a rien contacté
+        proposition = None if bloque or prive else contournement(db, ip, domaine)
         nom = nom_appareil(db, ip)
         db.commit()
     if proposition:
         threading.Thread(target=messager.proposer, args=(proposition,)).start()
     if vu_le is None:
-        alerter(f"New device on the network: {nom} {mac_de(ip)}\nFirst domain: {domaine}")
+        alerter(f"New device on the network: {nom} {mac_de(ip)}" + ("" if prive else f"\nFirst domain: {domaine}"))
     elif vues and vu_le < time.time() - APPRENTISSAGE:
         alerter(f"{nom} contacted {' and '.join(vues)} for the first time\nDomain: {domaine}")
 
@@ -492,17 +512,23 @@ def traiter(paquet, ip, tcp=False):
     if domaine == SANTE:
         return reponse_vide(paquet, fin, 0)
     bloque = (est_bloque(domaine) or bloque_par_regle(ip, domaine, time.localtime().tm_hour)) and not pause_restante()  # pause lue seulement pour les domaines bloqués
+    try:
+        with verrou:
+            prive = est_prive(db, ip)
+    except sqlite3.Error:
+        prive = True  # dans le doute, on ne garde rien
     if bloque:
         reponse = reponse_vide(paquet, fin, 3)
     elif not (reponse := depuis_cache(paquet, fin)):
         try:
             reponse = relayer(paquet, tcp)
             mettre_en_cache(paquet, fin, reponse)
-            noter_ip(domaine, reponse, fin)
+            if not prive:
+                noter_ip(domaine, reponse, fin)
         except OSError:
             reponse = depuis_cache(paquet, fin, perime=True) or reponse_vide(paquet, fin, 2)
     try:
-        noter(ip, domaine, bloque)
+        noter(ip, domaine, bloque, prive)
     except sqlite3.Error as e:  # un journal raté ne doit jamais priver l'appareil de sa réponse
         print("not logged:", e, flush=True)
     return reponse
@@ -571,16 +597,14 @@ def passerelle():
     return ""
 
 
-def hors_khada3(db, arp, box, maintenant, tunnel=()):
+def hors_khada3(db, arp, box, maintenant):
     """Appareils de la table ARP (texte de /proc/net/arp) qui n'ont jamais demandé un domaine à khada3 :
-    ils utilisent un autre DNS. Les retient et renvoie ceux vus pour la première fois [(ip, mac)].
-    tunnel : IP locales des appareils qui passent par khada3 à travers Tailscale (voir lan_tailscale)."""
+    ils utilisent un autre DNS. Les retient et renvoie ceux vus pour la première fois [(ip, mac)]."""
     connus = {m or i for i, m in db.execute("SELECT ip, mac FROM appareils")}  # par MAC, par IP si la MAC manquait
-    db.executemany("DELETE FROM hors_khada3 WHERE ip = ?", [(ip,) for ip in tunnel])
     nouveaux = []
     for ligne in arp.splitlines()[1:]:
         champs = ligne.split()
-        if len(champs) < 4 or champs[2] != "0x2" or champs[0] in (box, *connus, *tunnel) or champs[3] in connus:
+        if len(champs) < 4 or champs[2] != "0x2" or champs[0] in (box, *connus) or champs[3] in connus:
             continue  # 0x2 : adresse résolue, l'appareil a parlé récemment
         ip, mac = champs[0], champs[3]
         if db.execute("INSERT OR IGNORE INTO hors_khada3 VALUES (?, ?, ?)", (mac, ip, maintenant)).rowcount:
@@ -601,7 +625,8 @@ def surveiller_reseau():
         except OSError:
             arp = ""
         with verrou:
-            nouveaux = hors_khada3(db, arp, passerelle(), time.time(), lan_tailscale(etat_tailscale()))
+            lier_tailscale(db, arp, lan_tailscale(etat_tailscale()))
+            nouveaux = hors_khada3(db, arp, passerelle(), time.time())
             db.commit()
         if nouveaux:
             alerter("On the network but NOT using khada3 (they ask another DNS, probably the box):\n"
