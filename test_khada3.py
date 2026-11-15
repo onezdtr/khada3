@@ -479,6 +479,26 @@ def test_suggestions_expirent_apres_une_semaine():
         "vieux.example": "expiree", "recent.example": "attente", "accepte.example": "acceptee"}
 
 
+def test_appareil_allume_mais_muet_signale_une_fois():
+    db = base_test()
+    t = 1_800_000_000
+    db.executemany("INSERT INTO appareils VALUES (?, ?, 0, ?)", [("10.0.0.2", "aa:aa", "tel"), ("100.1.1.1", "aa:aa", None),
+                                                                ("10.0.0.3", "bb:bb", "prise"), ("10.0.0.4", "cc:cc", "tv")])
+    # tel : bavard (100 requêtes/h pendant 7 jours, la dernière via Tailscale) puis muet depuis 3 h
+    db.executemany("INSERT INTO requetes VALUES (?, ?, 'x.fr', 0)", [(t - 3 * 3600 - i * 36, "100.1.1.1" if i == 0 else "10.0.0.2") for i in range(16800)])
+    db.executemany("INSERT INTO requetes VALUES (?, '10.0.0.3', 'x.fr', 0)", [(t - 3 * 3600 - i * 3600, ) for i in range(20)])  # peu bavard
+    db.executemany("INSERT INTO requetes VALUES (?, '10.0.0.4', 'x.fr', 0)", [(t - 60 - i * 36, ) for i in range(16800)])  # parle encore
+    arp = ("IP address HW type Flags HW address Mask Device\n10.0.0.2 0x1 0x2 aa:aa * eth0\n10.0.0.3 0x1 0x2 bb:bb * eth0\n"
+           "10.0.0.4 0x1 0x2 cc:cc * eth0\n10.0.0.9 0x1 0x2 dd:dd * eth0\n")
+    khada3.silencieux.clear()
+    assert khada3.muets(db, arp, t, joignable=lambda ip: False) == []  # éteint : la table ARP gardait une vieille entrée
+    assert khada3.muets(db, arp, t, joignable=lambda ip: True) == [("tel", 3.0)]
+    assert khada3.muets(db, arp, t, joignable=lambda ip: True) == []  # une seule alerte
+    db.execute("INSERT INTO requetes VALUES (?, '10.0.0.2', 'y.fr', 0)", (t + 10,))  # il reparle
+    khada3.muets(db, arp, t + 20, joignable=lambda ip: True)
+    assert "aa:aa" not in khada3.silencieux
+
+
 def test_hors_khada3():
     import sqlite3
     db = sqlite3.connect(":memory:")

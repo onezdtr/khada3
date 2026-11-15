@@ -622,6 +622,40 @@ def hors_khada3(db, arp, box, maintenant):
     return nouveaux
 
 
+SILENCE = 2 * 3600  # un appareil bavard qui ne demande plus rien depuis 2 h alors qu'il est allumé a changé de DNS
+BAVARD = 5  # requêtes par heure en moyenne sur 7 jours : en dessous, un silence de 2 h est normal
+silencieux = set()  # MAC déjà signalées ; une MAC en sort dès que l'appareil redemande un domaine
+
+
+def repond(ip):
+    return subprocess.run(["ping", "-c", "1", "-W", "1", ip], capture_output=True).returncode == 0
+
+
+def muets(db, arp, maintenant, joignable=repond):
+    """Appareils connus, allumés (dans l'ARP et répondant au ping), d'habitude bavards, mais muets depuis SILENCE :
+    ils ont sans doute activé un DNS chiffré ou le Relais privé d'iCloud. Renvoie ceux signalés pour la première fois [(nom, heures)]."""
+    nouveaux = []
+    for ligne in arp.splitlines()[1:]:
+        champs = ligne.split()
+        if len(champs) < 4 or champs[2] != "0x2":
+            continue
+        ip_lan, mac = champs[0], champs[3]
+        ips = [i for (i,) in db.execute("SELECT ip FROM appareils WHERE mac = ?", (mac,))]  # IP du réseau et IP Tailscale
+        if not ips:
+            continue
+        marques = ",".join("?" * len(ips))
+        dernier, semaine = db.execute(f"SELECT MAX(t), SUM(t > ?) FROM requetes WHERE ip IN ({marques})",
+                                      (maintenant - 7 * 86400, *ips)).fetchone()
+        if dernier is None or maintenant - dernier < SILENCE:
+            silencieux.discard(mac)
+            continue
+        if mac in silencieux or (semaine or 0) < BAVARD * 7 * 24 or not joignable(ip_lan):
+            continue
+        silencieux.add(mac)
+        nouveaux.append((nom_appareil(db, ips[0]), round((maintenant - dernier) / 3600, 1)))
+    return nouveaux
+
+
 def surveiller_reseau():
     """Toutes les 5 min : signale une fois chaque appareil du réseau qui contourne khada3.
     shortcut: ne voit que les appareils déjà dans la table ARP du serveur (pas de scan), ajouter un ping des IP du réseau si ça ne suffit pas."""
@@ -636,6 +670,10 @@ def surveiller_reseau():
             lier_tailscale(db, arp, lan_tailscale(etat_tailscale()))
             nouveaux = hors_khada3(db, arp, passerelle(), time.time())
             db.commit()
+            taiseux = muets(db, arp, time.time())
+        for nom, heures in taiseux:
+            alerter(f"{nom} is on and connected but has not asked khada3 anything for {heures} h.\n"
+                    "It probably switched to its own encrypted DNS (DoH, iCloud Private Relay, an app's VPN): khada3 no longer sees or filters it.")
         if nouveaux:
             alerter("On the network but NOT using khada3 (they ask another DNS, probably the box):\n"
                     + "\n".join(f"{fabricant(mac) or 'device'} {ip} {mac}" for ip, mac in nouveaux)
