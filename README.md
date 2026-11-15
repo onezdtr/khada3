@@ -24,6 +24,7 @@
 - **Pause blocking** when a site breaks: `/pause 10` on Telegram or the button on the dashboard, `/resume` to block again. Lists are untouched, everything comes back on its own.
 - **Catches devices that slip away.** When a device looks up an encrypted DNS service (Google, Cloudflare, Quad9, NextDNS…) or iCloud Private Relay, its requests would stop going through khada3: you get a suggestion to block it, so the device falls back to khada3.
 - **Spots devices that skip khada3 entirely.** A device on the Wi-Fi that never asks khada3 anything is using another DNS (usually the box's). Every 5 minutes khada3 reads the server's ARP table (no scan) and lists them on the dashboard, with one Telegram alert for each new one, so you know which devices to point at it.
+- **Private mode for family and guests.** Mark a device private (the ○ button next to it, even before it first uses khada3): it is still filtered, but khada3 only keeps how many requests it made and how many were blocked. No domain, no habits, no suggestions, nothing in the AI report. Making a device private erases what was already stored.
 - **Weekly report** on Sunday at 20:00, no AI needed: requests per device against the week before, devices that went silent for over a day, most blocked domains.
 - A 30-day history, purged automatically.
 
@@ -114,6 +115,7 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 - Domain names come from the network and are never inserted as HTML in the page.
 - The data stays on the machine, except the last 24 hours of domains sent to Gemini when the agent answers or writes the report, and the messages exchanged with your own Telegram bot.
 - The Telegram bot only listens to the chat it was paired with.
+- **Ask before logging someone else's device.** Even at home, a family member's DNS log is their browsing history: make their devices private unless they agree.
 - **Only run khada3 on a network you own.** Logging other people's traffic on a school, office or public network without permission is illegal in most countries.
 
 ## Files
