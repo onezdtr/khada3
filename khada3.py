@@ -284,14 +284,25 @@ def fabricant(mac):
     return fabricants.get(mac[:8].lower(), "")
 
 
+def etat_tailscale():
+    """`tailscale status --json`, ou {} sans Tailscale."""
+    try:
+        return json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, timeout=3).stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+
+def lan_tailscale(etat):
+    """IP locales des appareils Tailscale joints en direct (CurAddr « 192.168.1.176:43661 ») : leur DNS passe
+    par khada3 dans le tunnel, même si leur IP locale ne lui demande jamais rien."""
+    return {(p.get("CurAddr") or "").rpartition(":")[0] for p in (etat.get("Peer") or {}).values()} - {""}
+
+
 def nom_tailscale(ip):
     """Nom de la machine dans Tailscale (pas d'adresse MAC à travers le tunnel) ; vide hors Tailscale."""
     if not ip.startswith("100."):
         return ""
-    try:
-        etat = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, timeout=3).stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return ""
+    etat = etat_tailscale()
     for machine in [etat.get("Self") or {}, *(etat.get("Peer") or {}).values()]:
         if ip in (machine.get("TailscaleIPs") or []):
             return (machine.get("DNSName") or "").split(".")[0]  # le HostName d'un iPhone vaut « localhost »
@@ -560,14 +571,16 @@ def passerelle():
     return ""
 
 
-def hors_khada3(db, arp, box, maintenant):
+def hors_khada3(db, arp, box, maintenant, tunnel=()):
     """Appareils de la table ARP (texte de /proc/net/arp) qui n'ont jamais demandé un domaine à khada3 :
-    ils utilisent un autre DNS. Les retient et renvoie ceux vus pour la première fois [(ip, mac)]."""
+    ils utilisent un autre DNS. Les retient et renvoie ceux vus pour la première fois [(ip, mac)].
+    tunnel : IP locales des appareils qui passent par khada3 à travers Tailscale (voir lan_tailscale)."""
     connus = {m or i for i, m in db.execute("SELECT ip, mac FROM appareils")}  # par MAC, par IP si la MAC manquait
+    db.executemany("DELETE FROM hors_khada3 WHERE ip = ?", [(ip,) for ip in tunnel])
     nouveaux = []
     for ligne in arp.splitlines()[1:]:
         champs = ligne.split()
-        if len(champs) < 4 or champs[2] != "0x2" or champs[0] in (box, *connus) or champs[3] in connus:
+        if len(champs) < 4 or champs[2] != "0x2" or champs[0] in (box, *connus, *tunnel) or champs[3] in connus:
             continue  # 0x2 : adresse résolue, l'appareil a parlé récemment
         ip, mac = champs[0], champs[3]
         if db.execute("INSERT OR IGNORE INTO hors_khada3 VALUES (?, ?, ?)", (mac, ip, maintenant)).rowcount:
@@ -588,7 +601,7 @@ def surveiller_reseau():
         except OSError:
             arp = ""
         with verrou:
-            nouveaux = hors_khada3(db, arp, passerelle(), time.time())
+            nouveaux = hors_khada3(db, arp, passerelle(), time.time(), lan_tailscale(etat_tailscale()))
             db.commit()
         if nouveaux:
             alerter("On the network but NOT using khada3 (they ask another DNS, probably the box):\n"

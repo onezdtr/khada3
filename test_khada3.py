@@ -481,6 +481,13 @@ def test_hors_khada3():
     assert db.execute("SELECT ip, vu_le FROM hors_khada3").fetchall() == [("192.168.1.177", 2)]
     db.execute("INSERT INTO appareils VALUES ('192.168.1.177', 'aa:bb:cc:00:00:03', 3, NULL)")
     assert khada3.hors_khada3(db, arp, "192.168.1.1", 3) == [] and not db.execute("SELECT * FROM hors_khada3").fetchall()
+    # une box Android qui passe par khada3 à travers Tailscale : son IP locale ne doit plus être signalée
+    etat = {"Peer": {"a": {"CurAddr": "192.168.1.180:43661"}, "b": {"CurAddr": ""}, "c": {}}}
+    assert khada3.lan_tailscale(etat) == {"192.168.1.180"}
+    arp2 = arp + "192.168.1.180    0x1         0x2         aa:bb:cc:00:00:04     *        wlp3s0\n"
+    db.execute("INSERT INTO hors_khada3 VALUES ('aa:bb:cc:00:00:04', '192.168.1.180', 0)")  # signalée avant Tailscale
+    assert khada3.hors_khada3(db, arp2, "192.168.1.1", 4, khada3.lan_tailscale(etat)) == []
+    assert not db.execute("SELECT * FROM hors_khada3").fetchall()
 
 
 def test_appareil_suivi_par_sa_mac():
