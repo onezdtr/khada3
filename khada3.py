@@ -49,6 +49,8 @@ CONTOURNEMENTS = {"dns.google": "Google encrypted DNS", "cloudflare-dns.com": "C
 SIGNATURES = {domaine: (rang, genre) for rang, (domaine, genre) in enumerate([
     ("samsungotn.net", "Samsung TV"), ("lgtvsdp.com", "LG TV"), ("lgsmartad.com", "LG TV"),
     ("firetvcaptiveportal.com", "Fire TV"), ("nintendowifi.net", "Nintendo console"),
+    # avant Windows : des applis Android (Tailscale…) testent aussi msftconnecttest.com ; iron passait pour un PC
+    ("nflx-android-tv.prod.partner.netflix.net", "Android TV"), ("androidtvchannels-pa.googleapis.com", "Android TV"),
     ("captive.apple.com", "Apple device"), ("msftconnecttest.com", "Windows PC"),
     ("nmcheck.gnome.org", "Linux computer"), ("connectivity-check.ubuntu.com", "Linux computer"),
     ("fedoraproject.org", "Linux computer"), ("connectivitycheck.android.com", "Android device"),

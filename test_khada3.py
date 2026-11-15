@@ -457,13 +457,15 @@ def test_deviner_le_type_d_appareil():
     for ip, domaine in [("10.0.0.2", "auth.np.playstation.net"), ("10.0.0.2", "captive.apple.com"),  # téléphone avec l'appli PS
                         ("10.0.0.2", "playstation.net"), ("10.0.0.3", "eu.lgtvsdp.com"), ("10.0.0.3", "android.clients.google.com"),
                         ("10.0.0.6", "android.clients.google.com"), ("10.0.0.6", "mirrors.fedoraproject.org"),  # Linux avec Brave
-                        ("10.0.0.4", "captive.apple.com"), ("10.0.0.5", "example.com")]:
+                        ("10.0.0.4", "captive.apple.com"), ("10.0.0.5", "example.com"),
+                        ("10.0.0.7", "www.msftconnecttest.com"), ("10.0.0.7", "nflx-android-tv.prod.partner.netflix.net")]:  # boîtier TV avec Tailscale
         khada3.deviner(db, ip, domaine)
+    assert db.execute("SELECT genre FROM devinettes WHERE ip = '10.0.0.7'").fetchone() == ("Android TV",)
     assert khada3.nom_appareil(db, "10.0.0.2") == "Apple device 10.0.0.2"  # le test réseau d'Apple bat l'appli PlayStation
     assert khada3.nom_appareil(db, "10.0.0.3") == "LG TV 10.0.0.3"  # la TV n'est pas rétrogradée en « Android »
     assert khada3.nom_appareil(db, "10.0.0.4") == "salon"  # le nom donné passe avant
     assert db.execute("SELECT genre FROM devinettes WHERE ip = '10.0.0.6'").fetchone() == ("Linux computer",)
-    assert db.execute("SELECT COUNT(*) FROM devinettes").fetchone()[0] == 4
+    assert db.execute("SELECT COUNT(*) FROM devinettes").fetchone()[0] == 5
 
 
 def test_hors_khada3():
