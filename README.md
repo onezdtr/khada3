@@ -110,6 +110,20 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 
 **Telegram:** create a bot with [@BotFather](https://t.me/BotFather), put its token in `~/.config/khada3/telegram` (`chmod 600`), start khada3 and send `/start` to your bot: the first chat that writes to it becomes its owner, and it ignores everyone else. Then you get alerts, the report with Block / Ignore buttons, and you can ask questions in the chat (`/report` for the report on demand, `/pause 10` and `/resume`). The report is sent by `python3 resume.py` (see the timer above).
 
+## Honeypot (fakh)
+
+Optional. `fakh.py` ("trap" in Darija) runs fake SSH, Telnet and web services and logs who tries to get in: the logins and passwords botnets try, the pages scanners look for (`/.env`, router admin pages), the client software. It never gives a shell: every connection is read, logged, then refused. The dashboard shows a **Trap** section (logins tried, countries, pages, live feed) and the daily report adds one line.
+
+```sh
+sudo useradd -r -s /sbin/nologin fakh
+sudo install -Dm644 fakh.py /opt/fakh/fakh.py
+sudo cp fakh.service /etc/systemd/system/ && sudo systemctl enable --now fakh
+sudo firewall-cmd --permanent --add-port={2222,2323,8080}/tcp && sudo firewall-cmd --reload
+```
+
+Then forward ports 22, 23 and 80 of your router to ports 2222, 2323 and 8080 of the server. Never forward the real SSH port.
+The service runs as its own user with no access to `/home`, a read-only system and a read-only copy of the code. khada3 only reads its database (`/var/lib/fakh/fakh.db`, or `KHADA3_FAKH`). Everything an attacker sends is cut to printable text and shown as text only.
+
 ## Privacy and security
 
 - The DNS log is a browsing history. The dashboard refuses every request without the token stored in `~/.config/khada3/jeton` (created on first run). It is printed only when khada3 runs in a terminal, never into the systemd journal.
@@ -132,7 +146,8 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 | `regles.txt` | Optional: `domain [hours] [device]` rules (device = IP or the name given in the dashboard) |
 | `rapport.service`, `rapport.timer` | Daily report at 21:00 (systemd user timer) |
 | `semaine.service`, `semaine.timer` | Weekly report, Sunday 20:00 (`resume.py --semaine`) |
-| `test_khada3.py` | Tests |
+| `fakh.py`, `fakh.service` | Optional honeypot (see above) |
+| `test_khada3.py`, `test_fakh.py` | Tests |
 | `docs/demo/` | Demo GIF: `gen.py` builds a fake network, `record.mjs` films it in headless Chrome, `gif.sh` makes the GIF |
 
 ## Credits

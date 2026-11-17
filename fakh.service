@@ -1,0 +1,37 @@
+# Piège fakh, isolé : utilisateur sans droits, code en lecture seule dans /opt/fakh, aucun accès à /home.
+# Installer : sudo useradd -r -s /sbin/nologin fakh && sudo install -Dm644 fakh.py /opt/fakh/fakh.py
+#             sudo cp fakh.service /etc/systemd/system/ && sudo systemctl enable --now fakh
+[Unit]
+Description=fakh, the khada3 honeypot (fake SSH, Telnet and web)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=fakh
+Group=fakh
+ExecStart=/usr/bin/python3 -I /opt/fakh/fakh.py
+Environment=FAKH_ECOUTE=0.0.0.0 FAKH_BASE=/var/lib/fakh/fakh.db
+# khada3 (autre utilisateur) lit la base : dossier et fichier lisibles, pas modifiables
+StateDirectory=fakh
+StateDirectoryMode=0755
+UMask=0022
+Restart=always
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+MemoryMax=200M
+TasksMax=100
+
+[Install]
+WantedBy=multi-user.target

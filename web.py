@@ -63,7 +63,8 @@ def etat(ip=None):
     hors = [{"ip": i, "mac": m, "fabricant": fabricant(m), "vu_le": t, "prive": m in prives} for m, i, t in db.execute(
         "SELECT mac, ip, vu_le FROM hors_khada3 WHERE vu_le >= ? ORDER BY vu_le DESC", (time.time() - 86400,))]
     return {"appareils": appareils, "hors": hors, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
-            "heures": heures(db, filtre, params), "pause": round(pause_restante()), "regles": regles()}
+            "heures": heures(db, filtre, params), "pause": round(pause_restante()), "regles": regles(),
+            "attaques": resume.attaques()}
 
 
 def heures(db, filtre, params, maintenant=None):

@@ -100,6 +100,8 @@
   .axe { display: flex; justify-content: space-between; color: var(--doux); font-size: 12px; margin-top: 4px; }
   #detail-heure { margin-top: 10px; min-height: 1.5em; font-size: 13px; }
   #detail-heure .titre { color: var(--cyan); }
+  #piege-direct .service { min-width: 44px; }
+  .sous { margin: 14px 0 4px; font-size: 12px; font-weight: normal; color: var(--doux); text-transform: uppercase; letter-spacing: .08em; }
   .credits { grid-column: 1 / -1; color: var(--doux); font-size: 12px; margin: 0; }
   .credits a { color: inherit; }
   #reponse { white-space: pre-wrap; margin: 12px 0 0; padding: 10px 12px; border-left: 2px solid var(--neon); background: rgb(57 255 156 / .04); }
@@ -163,6 +165,18 @@
     <section aria-labelledby="t-pays">
       <h2 id="t-pays">Where the traffic goes · 24 h</h2>
       <ul id="pays"></ul>
+    </section>
+    <section aria-labelledby="t-piege" id="bloc-piege" hidden>
+      <h2 id="t-piege">Trap · 24 h</h2>
+      <p class="petit aide" id="piege-chiffres"></p>
+      <h3 class="sous">Logins tried</h3>
+      <ul id="piege-mdp"></ul>
+      <h3 class="sous">Where they come from</h3>
+      <ul id="piege-pays"></ul>
+      <h3 class="sous">Pages they look for</h3>
+      <ul id="piege-pages"></ul>
+      <h3 class="sous">Live</h3>
+      <ul id="piege-direct" class="flux"></ul>
     </section>
     <section aria-labelledby="t-direct">
       <h2 id="t-direct">Live feed</h2>
@@ -250,10 +264,32 @@ async function rafraichir() {
 
   heures = etat.heures;
   dessinerHeures();
+  dessinerPiege(etat.attaques);
 
   document.getElementById("direct").replaceChildren(...etat.direct.map((d) => el("li", { className: "ligne" + (d.bloque ? " bloque" : "") },
     el("span", { className: "petit", textContent: heure(d.t) }), el("span", { className: "d", textContent: d.domaine }),
     el("span", { className: "petit", textContent: nomDe(appareils.find((a) => a.ip === d.ip) || { ip: d.ip }) }))));
+}
+
+// --- Piège fakh : tout ce qui suit vient d'attaquants, donc uniquement du texte (textContent), jamais de HTML ---
+function dessinerPiege(a) {
+  document.getElementById("bloc-piege").hidden = !a;
+  if (!a) return;
+  const n = (x) => el("span", { className: "n", textContent: x });
+  const max = Math.max(1, ...a.pays.map((p) => p.n));
+  document.getElementById("piege-chiffres").textContent = [`${a.total} attempts`, `${a.ips} IPs`,
+    ...Object.entries(a.services).map(([s, k]) => `${s} ${k}`)].join(" · ");
+  document.getElementById("piege-mdp").replaceChildren(...a.mdp.map((m) => el("li", { className: "ligne" },
+    n(m.n), el("span", { className: "d", textContent: `${m.identifiant ?? ""} / ${m.mdp}` }))));
+  document.getElementById("piege-pays").replaceChildren(...a.pays.map((p) => el("li", { className: "barre" },
+    el("span", { className: "code", textContent: p.pays }), el("span", { className: "nom", textContent: nomPays(p.pays) }),
+    el("span", { className: "jauge" }, el("i", { style: `width:${(100 * p.n / max).toFixed(1)}%` })), n(p.n))));
+  document.getElementById("piege-pages").replaceChildren(...a.pages.map((p) => el("li", { className: "ligne" },
+    n(p.n), el("span", { className: "d", textContent: p.demande }))));
+  document.getElementById("piege-direct").replaceChildren(...a.direct.map((c) => el("li", { className: "ligne" },
+    el("span", { className: "petit", textContent: heure(c.t) }), el("span", { className: "petit service", textContent: c.service }),
+    el("span", { className: "d", textContent: c.mdp != null ? `${c.identifiant ?? ""} / ${c.mdp}` : c.demande || c.logiciel || "connected" },
+      el("small", { className: "qui", textContent: c.pays ? `${c.ip} · ${nomPays(c.pays)}` : c.ip })))));
 }
 
 // --- Chronologie : une barre par heure, la part bloquée en rouge au-dessus ---

@@ -21,6 +21,7 @@ import messager
 from khada3 import BASE, DOMAINE, candidats, est_bloque, fabricant, nom_appareil, verrou
 
 MODELE = os.environ.get("KHADA3_MODELE", "gemini-3.1-flash-lite")
+FAKH = Path(os.environ.get("KHADA3_FAKH", "/var/lib/fakh/fakh.db"))  # base du piège fakh, s'il est installé
 LANGUE = os.environ.get("KHADA3_LANGUE", "English")  # langue du rapport du jour
 CONSIGNE = f"""You are the network administrator of a home. You get, device by device, the domains contacted
 in the last 24 hours: number of requests, how many were blocked, the company behind the domain and its activity
@@ -81,6 +82,48 @@ def demander(donnees_json, question=None):
     return "".join(p.get("text", "") for p in reponse["candidates"][0]["content"]["parts"])
 
 
+def attaques(maintenant=None):
+    """Le piège fakh sur 24 h, ou None s'il n'est pas installé. Lecture seule : khada3 n'écrit jamais dans sa base."""
+    if not FAKH.exists():
+        return None
+    depuis = (maintenant or time.time()) - 86400
+    try:
+        db = sqlite3.connect(f"file:{FAKH}?mode=ro", uri=True, timeout=2)
+        total, ips = db.execute("SELECT COUNT(*), COUNT(DISTINCT ip) FROM coups WHERE t >= ?", (depuis,)).fetchone()
+        services = dict(db.execute("SELECT service, COUNT(*) FROM coups WHERE t >= ? GROUP BY service", (depuis,)))
+        mdp = [dict(zip(("identifiant", "mdp", "n"), l)) for l in db.execute(
+            """SELECT identifiant, mdp, COUNT(*) FROM coups WHERE t >= ? AND mdp IS NOT NULL
+               GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 8""", (depuis,))]
+        pages = [dict(zip(("demande", "n"), l)) for l in db.execute(
+            "SELECT demande, COUNT(*) FROM coups WHERE t >= ? AND demande IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 8", (depuis,))]
+        par_pays = {}
+        for ip, n in db.execute("SELECT ip, COUNT(*) FROM coups WHERE t >= ? GROUP BY ip", (depuis,)):
+            code = qui.pays(ip) or "?"
+            par_pays[code] = par_pays.get(code, 0) + n
+        direct = [dict(zip(("t", "ip", "service", "identifiant", "mdp", "demande", "logiciel"), l)) for l in db.execute(
+            "SELECT t, ip, service, identifiant, mdp, demande, logiciel FROM coups ORDER BY t DESC LIMIT 30")]
+        db.close()
+    except sqlite3.Error as e:  # fakh démarre ou écrit : on réessaiera au prochain rafraîchissement
+        print("fakh database not readable:", e, flush=True)
+        return None
+    for d in direct:
+        d["pays"] = qui.pays(d["ip"])
+    pays = sorted(({"pays": p, "n": n} for p, n in par_pays.items()), key=lambda x: -x["n"])[:10]
+    return {"total": total, "ips": ips, "services": services, "mdp": mdp, "pages": pages, "pays": pays, "direct": direct}
+
+
+def ligne_attaques(a):
+    """Une ligne pour le rapport du soir."""
+    if not a or not a["total"]:
+        return ""
+    texte = f"\n\nTrap (fakh): {a['total']} attempts from {a['ips']} IPs"
+    if a["mdp"]:
+        texte += f" · top login {a['mdp'][0]['identifiant']} / {a['mdp'][0]['mdp']} ({a['mdp'][0]['n']})"
+    if a["pays"]:
+        texte += f" · top country {a['pays'][0]['pays']}"
+    return texte
+
+
 def rapport():
     """(texte du rapport, nouvelles propositions enregistrées) ; les propositions sont filtrées avant d'être gardées."""
     appareils = donnees(time.time() - 86400)
@@ -98,7 +141,7 @@ def rapport():
                 curseur = db.execute("INSERT OR IGNORE INTO propositions (t, domaine, raison) VALUES (?, ?, ?)", (time.time(), domaine, raison))
                 if curseur.rowcount:
                     nouvelles.append({"id": curseur.lastrowid, "domaine": domaine, "raison": raison})
-    return "khada3, daily report\n\n" + reponse.get("rapport", ""), nouvelles
+    return "khada3, daily report\n\n" + reponse.get("rapport", "") + ligne_attaques(attaques()), nouvelles
 
 
 def semaine(maintenant=None, db=None):

@@ -6,3 +6,6 @@ autoriser.txt
 pause
 regles.txt
 semaine.png
+fakh.db
+*.db-shm
+*.db-wal
