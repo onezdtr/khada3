@@ -110,6 +110,27 @@ The daily report at 21:00: `cp rapport.service rapport.timer ~/.config/systemd/u
 
 **Telegram:** create a bot with [@BotFather](https://t.me/BotFather), put its token in `~/.config/khada3/telegram` (`chmod 600`), start khada3 and send `/start` to your bot: the first chat that writes to it becomes its owner, and it ignores everyone else. Then you get alerts, the report with Block / Ignore buttons, and you can ask questions in the chat (`/report` for the report on demand, `/pause 10` and `/resume`). The report is sent by `python3 resume.py` (see the timer above).
 
+## Data sent out (flux)
+
+Optional, for devices that use the server as their [Tailscale exit node](https://tailscale.com/kb/1103/exit-nodes). `flux.py` listens to the kernel connection tracking and logs every connection when it ends: device, destination (with the name khada3 resolved for it), port, bytes sent and received. Never the content. The dashboard shows a **Sent out** section per device, sorted by bytes sent, and the agent gets these volumes too.
+
+```sh
+sudo dnf install conntrack-tools
+echo net.netfilter.nf_conntrack_acct=1 | sudo tee /etc/sysctl.d/90-khada3-flux.conf && sudo sysctl --system
+sudo cp flux.service /etc/systemd/system/ && sudo systemctl enable --now flux   # set User= to the account running khada3
+```
+
+**Exit node and DNS:** when a device uses an exit node, Tailscale sends its DNS queries to the exit node, which answers with its own system resolver, so they skip khada3 (no blocking, no names). Point only `tailscaled` to khada3, the rest of the server keeps its resolver:
+
+```sh
+sudo mkdir -p /etc/khada3 /etc/systemd/system/tailscaled.service.d
+echo "nameserver 127.0.0.1" | sudo tee /etc/khada3/resolv-tailscaled.conf
+printf "[Service]\nBindReadOnlyPaths=/etc/khada3/resolv-tailscaled.conf:/etc/resolv.conf\n" | sudo tee /etc/systemd/system/tailscaled.service.d/khada3-dns.conf
+sudo systemctl daemon-reload && sudo systemctl restart tailscaled
+```
+
+These queries reach khada3 from `127.0.0.1` (the server), not from the device.
+
 ## Honeypot (fakh)
 
 Optional. `fakh.py` ("trap" in Darija) runs fake SSH, Telnet and web services and logs who tries to get in: the logins and passwords botnets try, the pages scanners look for (`/.env`, router admin pages), the client software. It never gives a shell: every connection is read, logged, then refused. The dashboard shows a **Trap** section (logins tried, countries, pages, live feed) and the daily report adds one line.
@@ -146,6 +167,7 @@ The service runs as its own user with no access to `/home`, a read-only system a
 | `regles.txt` | Optional: `domain [hours] [device]` rules (device = IP or the name given in the dashboard) |
 | `rapport.service`, `rapport.timer` | Daily report at 21:00 (systemd user timer) |
 | `semaine.service`, `semaine.timer` | Weekly report, Sunday 20:00 (`resume.py --semaine`) |
+| `flux.py`, `flux.service` | Optional: data sent and received through the exit node (see above) |
 | `fakh.py`, `fakh.service` | Optional honeypot (see above) |
 | `test_khada3.py`, `test_fakh.py` | Tests |
 | `docs/demo/` | Demo GIF: `gen.py` builds a fake network, `record.mjs` films it in headless Chrome, `gif.sh` makes the GIF |

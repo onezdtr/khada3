@@ -184,6 +184,8 @@ def test_agent_ne_peut_proposer_que_des_pisteurs_reconnus():
                          "CREATE TABLE appareils (ip TEXT PRIMARY KEY, mac TEXT, vu_le REAL, nom TEXT);"
                          "CREATE TABLE domaines (domaine TEXT PRIMARY KEY, ip TEXT);"
                          "CREATE TABLE devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);"
+                         "CREATE TABLE connexions (t REAL, ip TEXT, dest TEXT, domaine TEXT, proto TEXT, port INTEGER, envoye INTEGER, recu INTEGER);"
+                         "INSERT INTO connexions VALUES (1e12, '10.0.0.2', '1.2.3.4', 'unagi-na.amazon.com', 'tcp', 443, 500, 900);"
                          "CREATE TABLE propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente');")
         for dom in ("connectivitycheck.gstatic.com", "unagi-na.amazon.com", "deja.bloque.com"):
             db.execute("INSERT INTO requetes VALUES (?, '10.0.0.2', ?, 0)", (time.time(), dom))
@@ -234,6 +236,37 @@ def base_test():
                      "CREATE TABLE hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);"
                      "CREATE TABLE IF NOT EXISTS propositions (id INTEGER PRIMARY KEY, t REAL, domaine TEXT UNIQUE, raison TEXT, etat TEXT DEFAULT 'attente');")
     return db
+
+
+def test_flux_connexions_sorties_par_le_serveur():
+    import flux
+    ligne = ("[1795400000.123456]\t[DESTROY] tcp      6 src=100.64.0.5 dst=140.82.112.3 sport=51514 dport=443 packets=12 bytes=1834 "
+             "src=140.82.112.3 dst=192.168.1.186 sport=443 dport=51514 packets=10 bytes=6234 [ASSURED] mark=0 use=1")
+    c = flux.lire(ligne)
+    assert c == (1795400000.123456, "100.64.0.5", "140.82.112.3", "tcp", 443, 1834, 6234)
+    assert flux.lire("[NEW] tcp 6 120 SYN_SENT src=1.2.3.4") is None
+    assert flux.a_noter("100.64.0.5", "140.82.112.3")
+    assert not flux.a_noter("100.64.0.5", "100.98.0.1")  # vers un autre appareil Tailscale ou le serveur
+    assert not flux.a_noter("192.168.1.20", "140.82.112.3") and not flux.a_noter("100.64.0.5", "192.168.1.1")
+    assert flux.a_noter("fd7a:115c:a1e0::5", "2600:1f18::1") and not flux.a_noter("fd7a:115c:a1e0::5", "fd7a:115c:a1e0::9")
+    assert flux.ipv4_tailscale({"Peer": {"k": {"TailscaleIPs": ["100.64.0.5", "fd7a:115c:a1e0::5"]}, "x": {}}}) == {"fd7a:115c:a1e0::5": "100.64.0.5"}
+    db = base_test()
+    db.executescript("CREATE TABLE adresses (ip TEXT PRIMARY KEY, domaine TEXT);"
+                     "CREATE TABLE connexions (t REAL, ip TEXT, dest TEXT, domaine TEXT, proto TEXT, port INTEGER, envoye INTEGER, recu INTEGER);"
+                     "INSERT INTO adresses VALUES ('140.82.112.3', 'github.com');"
+                     "INSERT INTO appareils VALUES ('100.64.0.6', 'aa:aa:aa:aa:aa:06', 0, NULL);"
+                     "INSERT INTO prives VALUES ('aa:aa:aa:aa:aa:06');")
+    flux.noter(db, c)
+    flux.noter(db, (1, "100.64.0.5", "8.8.8.8", "udp", 443, 10, 20))  # adresse jamais demandée au DNS
+    flux.noter(db, (1, "100.64.0.6", "140.82.112.3", "tcp", 443, 10, 20))  # appareil privé : rien
+    assert db.execute("SELECT ip, dest, domaine, envoye, recu FROM connexions ORDER BY t DESC").fetchall() == [
+        ("100.64.0.5", "140.82.112.3", "github.com", 1834, 6234), ("100.64.0.5", "8.8.8.8", None, 10, 20)]
+
+
+def test_reponse_ipv6_notee_pour_les_connexions():
+    reponse = REPONSE[:7] + b"\x03" + REPONSE[8:] + bytes.fromhex("c00c001c000100000078001020010db8000000000000000000000001")
+    _, fin = khada3.lire_question(REQUETE)
+    assert khada3.lire_reponse(reponse, fin)[0] == ["93.184.215.14", "93.184.215.15", "2001:db8::1"]
 
 
 def test_nouveautes_une_seule_fois_par_appareil():

@@ -33,7 +33,9 @@ Put this text in "rapport": no markdown, 1500 characters at most.
 In "a_bloquer", list up to 8 ad or tracking domains worth blocking, each with a one-sentence reason in {LANGUE};
 only domains whose "bloquable" is true (listed as trackers by a curated blocklist, and not blocked yet).
 An empty list is fine when nothing deserves it.
-Only mention domains present in the data."""
+Only mention domains present in the data.
+When a device has "envoye_a", it lists where it sent the most data (byte volumes only, never the content):
+point out large uploads to trackers or unexpected places."""
 SCHEMA = {"type": "OBJECT", "required": ["rapport", "a_bloquer"], "properties": {
     "rapport": {"type": "STRING"},
     "a_bloquer": {"type": "ARRAY", "items": {"type": "OBJECT", "required": ["domaine", "raison"],
@@ -54,11 +56,17 @@ def donnees(depuis):
             entreprise, categorie = qui.entreprise(domaine)
             app["domaines"].append({"domaine": domaine, "requetes": n, "bloquees": bloques, "bloquable": candidats.contient(domaine) and not est_bloque(domaine), "entre_0h_et_6h": nuit,
                                     "entreprise": entreprise, "categorie": categorie, "pays_serveur": qui.pays(ips.get(domaine))})
+    # connexions sorties par le serveur (flux.py) : les volumes envoyés, jamais le contenu
+    for ip, cible, envoye, recu in db.execute("""SELECT ip, COALESCE(domaine, dest), SUM(envoye), SUM(recu) FROM connexions
+                                                  WHERE t >= ? GROUP BY ip, 2 ORDER BY SUM(envoye) DESC""", (depuis,)):
+        if ip in appareils and len(appareils[ip].setdefault("envoye_a", [])) < 15:
+            appareils[ip]["envoye_a"].append({"destination": cible, "octets_envoyes": envoye, "octets_recus": recu})
     return list(appareils.values())
 
 
 CONSIGNE_QUESTION = """You are the network administrator of a home. You get, device by device, the domains contacted
-in the last 24 hours (with the company, activity and server country when known), then a question. Answer briefly and simply, in the language of the question, using only this data;
+in the last 24 hours (with the company, activity and server country when known) and, in "envoye_a", the byte volumes
+it sent and received per destination when it goes out through the server (never the content), then a question. Answer briefly and simply, in the language of the question, using only this data;
 if the data cannot answer it, say so."""
 
 

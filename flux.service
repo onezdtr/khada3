@@ -1,0 +1,21 @@
+# Connexions des appareils qui sortent par le serveur (exit node Tailscale) : volumes seulement, jamais le contenu.
+# Installer : sudo dnf install conntrack-tools
+#             echo net.netfilter.nf_conntrack_acct=1 | sudo tee /etc/sysctl.d/90-khada3-flux.conf && sudo sysctl --system
+#             sudo cp flux.service /etc/systemd/system/ && sudo systemctl enable --now flux   (remplacer YOUR_USER par le compte qui fait tourner khada3)
+[Unit]
+Description=khada3 flux: data sent and received by devices using the server as exit node
+After=network-online.target khada3.service
+
+[Service]
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/khada3
+ExecStart=/usr/bin/python3 /home/YOUR_USER/khada3/flux.py
+# écouter les connexions du noyau, rien d'autre
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

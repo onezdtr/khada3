@@ -100,6 +100,8 @@
   .axe { display: flex; justify-content: space-between; color: var(--doux); font-size: 12px; margin-top: 4px; }
   #detail-heure { margin-top: 10px; min-height: 1.5em; font-size: 13px; }
   #detail-heure .titre { color: var(--cyan); }
+  .octets { min-width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
+  .octets.envoi { color: var(--neon); }
   #piege-direct .service { min-width: 44px; }
   .sous { margin: 14px 0 4px; font-size: 12px; font-weight: normal; color: var(--doux); text-transform: uppercase; letter-spacing: .08em; }
   .credits { grid-column: 1 / -1; color: var(--doux); font-size: 12px; margin: 0; }
@@ -165,6 +167,11 @@
     <section aria-labelledby="t-pays">
       <h2 id="t-pays">Where the traffic goes · 24 h</h2>
       <ul id="pays"></ul>
+    </section>
+    <section aria-labelledby="t-sorties">
+      <h2 id="t-sorties">Sent out · 24 h</h2>
+      <p class="petit aide">Where each device sent data and how much (↑ sent, ↓ received). Only for devices using the server as Tailscale exit node. Never the content.</p>
+      <ul id="sorties" class="flux"></ul>
     </section>
     <section aria-labelledby="t-piege" id="bloc-piege" hidden>
       <h2 id="t-piege">Trap · 24 h</h2>
@@ -265,10 +272,23 @@ async function rafraichir() {
   heures = etat.heures;
   dessinerHeures();
   dessinerPiege(etat.attaques);
+  dessinerSorties(etat.connexions);
 
   document.getElementById("direct").replaceChildren(...etat.direct.map((d) => el("li", { className: "ligne" + (d.bloque ? " bloque" : "") },
     el("span", { className: "petit", textContent: heure(d.t) }), el("span", { className: "d", textContent: d.domaine }),
     el("span", { className: "petit", textContent: nomDe(appareils.find((a) => a.ip === d.ip) || { ip: d.ip }) }))));
+}
+
+const taille = (o) => o < 1e3 ? `${o} B` : o < 1e6 ? `${(o / 1e3).toFixed(1)} kB` : o < 1e9 ? `${(o / 1e6).toFixed(1)} MB` : `${(o / 1e9).toFixed(2)} GB`;
+
+function dessinerSorties(connexions) {
+  document.getElementById("sorties").replaceChildren(...(connexions.length ? connexions.map((c) => el("li", { className: "ligne" },
+    el("span", { className: "octets envoi", textContent: `↑ ${taille(c.envoye)}` }),
+    el("span", { className: "octets petit", textContent: `↓ ${taille(c.recu)}` }),
+    el("span", { className: "d" }, c.cible, el("small", { className: "qui", textContent: [
+      c.entreprise && `${c.entreprise} · ${c.categorie}`, c.pays && nomPays(c.pays), `port ${c.ports}`,
+      `${c.n} connection${c.n > 1 ? "s" : ""}`, c.domaine ? "" : "no DNS name: contacted by its address"].filter(Boolean).join(" · ") }))))
+    : [el("li", { className: "petit aide", textContent: "Nothing yet: turn on the exit node “serveur” in Tailscale on a device." })]));
 }
 
 // --- Piège fakh : tout ce qui suit vient d'attaquants, donc uniquement du texte (textContent), jamais de HTML ---

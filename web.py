@@ -62,7 +62,13 @@ def etat(ip=None):
         "SELECT id, domaine, raison FROM propositions WHERE etat = 'attente' ORDER BY t DESC")]
     hors = [{"ip": i, "mac": m, "fabricant": fabricant(m), "vu_le": t, "prive": m in prives} for m, i, t in db.execute(
         "SELECT mac, ip, vu_le FROM hors_khada3 WHERE vu_le >= ? ORDER BY vu_le DESC", (time.time() - 86400,))]
-    return {"appareils": appareils, "hors": hors, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
+    connexions = [dict(zip(("cible", "domaine", "dest", "ports", "envoye", "recu", "n", "dernier"), l)) for l in db.execute(
+        f"""SELECT COALESCE(domaine, dest), domaine, MAX(dest), GROUP_CONCAT(DISTINCT port), SUM(envoye), SUM(recu), COUNT(*), MAX(t)
+            FROM connexions WHERE t >= ? {filtre} GROUP BY 1 ORDER BY SUM(envoye) DESC LIMIT 40""", (time.time() - 86400, *params))]
+    for c in connexions:
+        c["entreprise"], c["categorie"] = qui.entreprise(c["domaine"]) if c["domaine"] else (None, None)
+        c["pays"] = qui.pays(c["dest"])
+    return {"appareils": appareils, "hors": hors, "connexions": connexions, "domaines": domaines, "direct": direct, "pays": pays, "propositions": propositions,
             "heures": heures(db, filtre, params), "pause": round(pause_restante()), "regles": regles(),
             "attaques": resume.attaques()}
 

@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS habitudes (ip TEXT, genre TEXT, valeur TEXT, PRIMARY 
 CREATE TABLE IF NOT EXISTS devinettes (ip TEXT PRIMARY KEY, genre TEXT, rang INTEGER);
 CREATE TABLE IF NOT EXISTS hors_khada3 (mac TEXT PRIMARY KEY, ip TEXT, vu_le REAL);
 CREATE TABLE IF NOT EXISTS prives (cle TEXT PRIMARY KEY);  -- MAC (ou IP sans MAC) des appareils privés
+CREATE TABLE IF NOT EXISTS adresses (ip TEXT PRIMARY KEY, domaine TEXT);  -- chaque adresse donnée par le DNS : le nom d'une connexion (flux.py)
+CREATE TABLE IF NOT EXISTS connexions (t REAL, ip TEXT, dest TEXT, domaine TEXT, proto TEXT, port INTEGER, envoye INTEGER, recu INTEGER);
+CREATE INDEX IF NOT EXISTS connexions_t ON connexions (t);
 """)
 if "nom" not in [c[1] for c in db.execute("PRAGMA table_info(appareils)")]:
     db.execute("ALTER TABLE appareils ADD COLUMN nom TEXT")  # bases créées avant les noms d'appareils
@@ -113,7 +116,7 @@ def sauter_nom(paquet, i):
 
 
 def lire_reponse(reponse, fin):
-    """Adresses IPv4 et plus petit TTL des réponses ; IndexError si le paquet est tronqué."""
+    """Adresses (IPv4 puis IPv6, dans l'ordre de la réponse) et plus petit TTL ; IndexError si le paquet est tronqué."""
     i, ips, ttl = fin, [], None
     for _ in range(int.from_bytes(reponse[6:8], "big")):
         i = sauter_nom(reponse, i)
@@ -122,6 +125,8 @@ def lire_reponse(reponse, fin):
             raise IndexError("réponse tronquée")
         if type_ == 1 and taille == 4:
             ips.append(socket.inet_ntoa(reponse[i + 10:i + 14]))
+        elif type_ == 28 and taille == 16:
+            ips.append(socket.inet_ntop(socket.AF_INET6, reponse[i + 10:i + 26]))
         ttl = duree if ttl is None else min(ttl, duree)
         i += 10 + taille
     return ips, ttl
@@ -447,7 +452,7 @@ def recevoir(sock, n):
 
 
 def noter_ip(domaine, reponse, fin):
-    """Première adresse du domaine, pour retrouver le pays de son serveur."""
+    """Première adresse IPv4 du domaine (pays de son serveur), et toutes ses adresses (nom des connexions)."""
     try:
         ips, _ = lire_reponse(reponse, fin)
     except IndexError:
@@ -455,7 +460,9 @@ def noter_ip(domaine, reponse, fin):
     if ips:
         try:
             with verrou:
-                db.execute("INSERT OR REPLACE INTO domaines VALUES (?, ?)", (domaine, ips[0]))
+                if (v4 := [ip for ip in ips if ":" not in ip]):  # qui.pays ne lit que l'IPv4
+                    db.execute("INSERT OR REPLACE INTO domaines VALUES (?, ?)", (domaine, v4[0]))
+                db.executemany("INSERT OR REPLACE INTO adresses VALUES (?, ?)", [(ip, domaine) for ip in ips])
                 db.commit()
         except sqlite3.Error as e:
             print("ip not logged:", e, flush=True)
@@ -585,6 +592,7 @@ def purger():
     while True:
         with verrou:
             db.execute("DELETE FROM requetes WHERE t < ?", (time.time() - GARDER,))
+            db.execute("DELETE FROM connexions WHERE t < ?", (time.time() - GARDER,))
             expirer(db, time.time())
             db.commit()
             pics = pics_nocturnes(db, time.time())
