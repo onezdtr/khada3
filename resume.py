@@ -90,11 +90,11 @@ def demander(donnees_json, question=None):
     return "".join(p.get("text", "") for p in reponse["candidates"][0]["content"]["parts"])
 
 
-def attaques(maintenant=None):
-    """Le piège fakh sur 24 h, ou None s'il n'est pas installé. Lecture seule : khada3 n'écrit jamais dans sa base."""
+def attaques(maintenant=None, jours=1):
+    """Le piège fakh sur `jours` jours, ou None s'il n'est pas installé. Lecture seule : khada3 n'écrit jamais dans sa base."""
     if not FAKH.exists():
         return None
-    depuis = (maintenant or time.time()) - 86400
+    depuis = (maintenant or time.time()) - jours * 86400
     try:
         db = sqlite3.connect(f"file:{FAKH}?mode=ro", uri=True, timeout=2)
         total, ips = db.execute("SELECT COUNT(*), COUNT(DISTINCT ip) FROM coups WHERE t >= ?", (depuis,)).fetchone()
@@ -216,6 +216,10 @@ def carte(maintenant=None, db=None):
         x = 72 + i * 320
         s += [f'<text x="{x}" y="290" fill="{accent if i == 1 else texte}" font-size="72" font-weight="700">{valeur}</text>',
               f'<text x="{x}" y="334" fill="{gris}" font-size="26">{legende}</text>']
+    piege = attaques(maintenant, jours=7)
+    if piege and piege["total"]:  # fakh : ce qui a frappé aux fausses portes cette semaine
+        haut = f" · top country {piege['pays'][0]['pays']}" if piege["pays"] else ""
+        s.append(f'<text x="72" y="388" fill="{accent}" font-size="26">Trap: {piege["total"]:,} break-in attempts from {piege["ips"]:,} IPs{haut}</text>')
     s.append(f'<text x="72" y="440" fill="{gris}" font-size="24" letter-spacing="2">DEVICES</text>')
     plus = appareils[0][1]
     for i, (ip, n, nb) in enumerate(appareils):

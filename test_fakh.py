@@ -65,7 +65,15 @@ def test_pieges():
         assert a["mdp"][0]["n"] == 1 and a["pages"] == [{"demande": "GET /.env HTTP/1.1", "n": 1}]
         assert a["pays"] == [{"pays": "?", "n": 4}] and a["direct"][0]["service"] == "web"
         assert resume.ligne_attaques(a).startswith("\n\nTrap (fakh): 4 attempts from 1 IPs")
+        # la carte de la semaine mentionne le piège, sans adresse IP
+        import sqlite3 as _s
+        db = _s.connect(":memory:")
+        db.executescript("CREATE TABLE requetes (t REAL, ip TEXT, domaine TEXT, bloque INT); CREATE TABLE appareils (ip TEXT, mac TEXT, prive INT, nom TEXT); CREATE TABLE devinettes (ip TEXT, genre TEXT); CREATE TABLE domaines (domaine TEXT, ip TEXT)")
+        db.execute("INSERT INTO requetes VALUES (?, '10.0.0.2', 'a.fr', 0)", (time.time(),))
+        svg = resume.carte(None, db)
+        assert "Trap: 4 break-in attempts from 1 IPs" in svg
         resume.FAKH = Path(d) / "absent.db"
+        assert "Trap:" not in resume.carte(None, db)
         assert resume.attaques() is None and resume.ligne_attaques(None) == ""
 
         fakh.db.execute("UPDATE coups SET t = 0 WHERE service = 'ssh'")
