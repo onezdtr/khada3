@@ -689,6 +689,24 @@ def surveiller_reseau():
         time.sleep(300)
 
 
+PIEGE_ECART = 3600  # au plus un message du piège par heure : un port 23 ouvert reçoit des centaines de robots par jour
+
+
+def guetter_piege():
+    """Toutes les 5 min : les nouvelles IP attrapées par fakh, groupées en un message.
+    Hors du plafond d'alertes : un botnet ne doit pas faire taire l'alerte « nouvel appareil »."""
+    import resume  # ici : resume importe ce module
+    depuis, dernier = time.time(), 0  # au démarrage, on ne renvoie pas l'historique
+    while True:
+        time.sleep(300)
+        if time.time() - dernier < PIEGE_ECART:
+            continue  # depuis ne bouge pas : ils seront dans le prochain message
+        maintenant = time.time()  # pris avant la lecture : un coup pendant la lecture revient en double, jamais perdu
+        if nouveaux := resume.nouveaux_attaquants(depuis):
+            depuis = dernier = maintenant
+            messager.envoyer(resume.message_attaquants(nouveaux))
+
+
 def question_sante():
     """Question « A sante.khada3.invalid » : identifiant au hasard, puis l'en-tête de 10 octets (RD, une question)."""
     return os.urandom(2) + bytes.fromhex("01000001000000000000") + b"".join(
@@ -736,6 +754,6 @@ if __name__ == "__main__":
     tcp = socketserver.ThreadingTCPServer((ECOUTE, PORT), GestionTCP)
     serveur = socketserver.ThreadingUDPServer((ECOUTE, PORT), GestionUDP)
     print(f"khada3 listening on {ECOUTE}:{PORT} (UDP and TCP), upstream {', '.join(a[0] for a in AMONTS)}", flush=True)
-    for cible in (tcp.serve_forever, veiller, purger, surveiller_reseau, maj_listes, messager.ecouter, lambda: web.servir(ECOUTE)):
+    for cible in (tcp.serve_forever, veiller, purger, surveiller_reseau, guetter_piege, maj_listes, messager.ecouter, lambda: web.servir(ECOUTE)):
         threading.Thread(target=cible, daemon=True).start()
     serveur.serve_forever()

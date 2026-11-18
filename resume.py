@@ -120,6 +120,34 @@ def attaques(maintenant=None, jours=1):
     return {"total": total, "ips": ips, "services": services, "mdp": mdp, "pages": pages, "pays": pays, "direct": direct}
 
 
+def nouveaux_attaquants(depuis):
+    """IP qui ont frappé au piège fakh après `depuis` pour la première fois : un coup par IP (le premier),
+    [{ip, pays, service, identifiant, mdp, demande}]. Liste vide si fakh n'est pas installé ou pas lisible."""
+    if not FAKH.exists():
+        return []
+    try:
+        db = sqlite3.connect(f"file:{FAKH}?mode=ro", uri=True, timeout=2)
+        # MIN(t) : SQLite prend les autres colonnes sur la même ligne, celle du premier coup
+        lignes = db.execute("""SELECT ip, service, identifiant, mdp, demande, MIN(t) FROM coups c WHERE t > ?
+                               AND NOT EXISTS (SELECT 1 FROM coups WHERE ip = c.ip AND t <= ?)
+                               GROUP BY ip ORDER BY MIN(t)""", (depuis, depuis)).fetchall()
+        db.close()
+    except sqlite3.Error as e:
+        print("fakh database not readable:", e, flush=True)
+        return []
+    return [dict(zip(("ip", "service", "identifiant", "mdp", "demande"), l), pays=qui.pays(l[0])) for l in lignes]
+
+
+def message_attaquants(liste, maximum=10):
+    """Le texte Telegram : une ligne par attaquant, ce qu'il a essayé."""
+    lignes = []
+    for a in liste[:maximum]:
+        essai = (f"{a['identifiant']} / {a['mdp']}" if a["mdp"] is not None else a["demande"] or "") if a["service"] != "ssh" else ""
+        lignes.append(f"{a['ip']} ({a['pays'] or '?'}) {a['service']} {essai}".rstrip())
+    plus = f"\n…and {len(liste) - maximum} more" if len(liste) > maximum else ""
+    return f"Trap (fakh): {len(liste)} new attacker{'s' * (len(liste) > 1)}\n" + "\n".join(lignes) + plus
+
+
 def ligne_attaques(a):
     """Une ligne pour le rapport du soir."""
     if not a or not a["total"]:

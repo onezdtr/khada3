@@ -31,6 +31,7 @@ def ouvrir(chemin=BASE):
     db.execute("""CREATE TABLE IF NOT EXISTS coups (t REAL, ip TEXT, service TEXT, identifiant TEXT, mdp TEXT,
                   demande TEXT, logiciel TEXT)""")
     db.execute("CREATE INDEX IF NOT EXISTS coups_t ON coups(t)")
+    db.execute("CREATE INDEX IF NOT EXISTS coups_ip ON coups(ip)")  # khada3 cherche si une IP est déjà venue
     db.commit()
 
 

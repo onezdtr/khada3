@@ -72,7 +72,20 @@ def test_pieges():
         db.execute("INSERT INTO requetes VALUES (?, '10.0.0.2', 'a.fr', 0)", (time.time(),))
         svg = resume.carte(None, db)
         assert "Trap: 4 break-in attempts from 1 IPs" in svg
+        # alerte Telegram : seulement les IP jamais vues avant `depuis`, un coup par IP
+        assert resume.nouveaux_attaquants(time.time()) == []
+        fakh.db.execute("INSERT INTO coups VALUES (?, '192.0.2.8', 'telnet', 'root', 'xc3511', NULL, NULL)", (time.time(),))
+        fakh.db.execute("INSERT INTO coups VALUES (?, '127.0.0.1', 'web', NULL, NULL, 'GET /', NULL)", (time.time(),))  # déjà venue
+        fakh.db.commit()
+        n = resume.nouveaux_attaquants(time.time() - 0.01)
+        assert [(a["ip"], a["service"], a["identifiant"], a["mdp"]) for a in n] == [("192.0.2.8", "telnet", "root", "xc3511")]
+        assert resume.message_attaquants(n) == "Trap (fakh): 1 new attacker\n192.0.2.8 (?) telnet root / xc3511"
+        n *= 12
+        assert resume.message_attaquants(n).endswith("…and 2 more") and "12 new attackers" in resume.message_attaquants(n)
+        fakh.db.execute("DELETE FROM coups WHERE ip = '192.0.2.8' OR service = 'web' AND demande = 'GET /'")
+        fakh.db.commit()
         resume.FAKH = Path(d) / "absent.db"
+        assert resume.nouveaux_attaquants(0) == []
         assert "Trap:" not in resume.carte(None, db)
         assert resume.attaques() is None and resume.ligne_attaques(None) == ""
 

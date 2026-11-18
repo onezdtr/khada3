@@ -133,7 +133,7 @@ These queries reach khada3 from `127.0.0.1` (the server), not from the device.
 
 ## Honeypot (fakh)
 
-Optional. `fakh.py` ("trap" in Darija) runs fake SSH, Telnet and web services and logs who tries to get in: the logins and passwords botnets try, the pages scanners look for (`/.env`, router admin pages), the client software. It never gives a shell: every connection is read, logged, then refused. The dashboard shows a **Trap** section (logins tried, countries, pages, live feed) and the daily report adds one line.
+Optional. `fakh.py` ("trap" in Darija) runs fake SSH, Telnet and web services and logs who tries to get in: the logins and passwords botnets try, the pages scanners look for (`/.env`, router admin pages), the client software. It never gives a shell: every connection is read, logged, then refused. The dashboard shows a **Trap** section (logins tried, countries, pages, live feed) and the daily report adds one line. New attackers also reach Telegram, grouped: at most one message an hour, one line per new IP with what it tried.
 
 ```sh
 sudo useradd -r -s /sbin/nologin fakh
